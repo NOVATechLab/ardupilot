@@ -11,6 +11,7 @@ COMPASS_EXTERNAL 1
 
 # Failsafe Configuration
 FS_ACTION 0
+FS_GCS_ENABLE 1
 
 # GPS Configuration
 GPS1_DELAY_MS 0
