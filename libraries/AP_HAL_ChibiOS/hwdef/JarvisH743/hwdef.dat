@@ -6,6 +6,7 @@ MCU STM32H7xx STM32H743xx
 
 # board ID for firmware load
 APJ_BOARD_ID 2013
+define AP_CUSTOM_FIRMWARE_STRING "JRVS H743"
 
 # crystal frequency, setup to use external oscillator
 OSCILLATOR_HZ 16000000
@@ -130,8 +131,15 @@ define RELAY3_PIN_DEFAULT 73
 define RELAY4_PIN_DEFAULT 72
 define RELAY5_PIN_DEFAULT 71
 
+# microSD support (Fake, just for scripting)
+PE1 SDCARD_CS CS
+PE2 SPI4_SCK SPI4
+PE5 SPI4_MISO SPI4
+PE6 SPI4_MOSI SPI4
+
 # spi devices
 SPIDEV icm42688  SPI1 DEVID1 IMU1_CS      MODE3  2*MHZ 16*MHZ   # Clock is 100Mhz so highest clock <= 24Mhz is 100Mhz/8
+SPIDEV sdcard    SPI4 DEVID2 SDCARD_CS    MODE0  400*KHZ 25*MHZ
 
 # no built-in compass, but probe the i2c bus for all possible
 # external compass types
@@ -143,6 +151,10 @@ define HAL_COMPASS_AUTO_ROT_DEFAULT 2
 # IMU
 IMU Invensensev3 SPI:icm42688 ROTATION_YAW_180
 define HAL_DEFAULT_INS_FAST_SAMPLE 1
+
+define HAL_OS_FATFS_IO 1
+define AP_SCRIPTING_ENABLED 1
+define SCRIPTING_HEAP_SIZE (64*1024)
 
 # setup for OSD
 define OSD_ENABLED 0
