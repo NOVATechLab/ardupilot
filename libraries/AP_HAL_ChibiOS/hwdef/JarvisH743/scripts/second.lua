@@ -1,0 +1,12 @@
+local last_time = 0
+
+function update()
+    local now = millis()
+    if now - last_time >= 30000 then -- 30000 ms = 30 second
+        gcs:send_text(0, "Hello from Lua script every 30 second")
+        last_time = now
+    end
+    return update, 1000  -- schedule again in 100 ms
+end
+
+return update()

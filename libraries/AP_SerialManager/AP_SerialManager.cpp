@@ -435,13 +435,23 @@ void AP_SerialManager::init()
 #endif
 
 
-#ifdef SERIAL4_READONLY
-    if (state[4].protocol != DEFAULT_SERIAL1_PROTOCOL) {
-        state[4].protocol.set(DEFAULT_SERIAL1_PROTOCOL);
+#ifdef SERIAL3_READONLY
+    if (state[3].protocol != DEFAULT_SERIAL3_PROTOCOL) {
+        state[3].protocol.set(DEFAULT_SERIAL3_PROTOCOL);
     }
 
-    if (state[4].baud != DEFAULT_SERIAL1_BAUD) {
-        state[4].baud.set(DEFAULT_SERIAL1_BAUD);
+    if (state[3].baud != DEFAULT_SERIAL3_BAUD) {
+        state[3].baud.set(DEFAULT_SERIAL3_BAUD);
+    }
+#endif
+
+#ifdef SERIAL4_READONLY
+    if (state[4].protocol != DEFAULT_SERIAL4_PROTOCOL) {
+        state[4].protocol.set(DEFAULT_SERIAL4_PROTOCOL);
+    }
+
+    if (state[4].baud != DEFAULT_SERIAL4_BAUD) {
+        state[4].baud.set(DEFAULT_SERIAL4_BAUD);
     }
 #endif
 
