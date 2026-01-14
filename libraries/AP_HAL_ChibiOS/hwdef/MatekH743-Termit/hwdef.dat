@@ -1,0 +1,3 @@
+include ../MatekH743/hwdef.dat
+
+define AP_CUSTOM_FIRMWARE_STRING "MatekH743-Termit"
