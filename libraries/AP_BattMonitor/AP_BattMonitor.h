@@ -46,6 +46,7 @@ class AP_BattMonitor_Torqeedo;
 class AP_BattMonitor_FuelLevel_Analog;
 class AP_BattMonitor_EFI;
 class AP_BattMonitor_Scripting;
+class AP_BattMonitor_JKBMS;
 
 
 class AP_BattMonitor
@@ -72,6 +73,7 @@ class AP_BattMonitor
     friend class AP_BattMonitor_FuelLevel_Analog;
     friend class AP_BattMonitor_Synthetic_Current;
     friend class AP_BattMonitor_Scripting;
+    friend class AP_BattMonitor_JKBMS;
 
 public:
 
@@ -112,6 +114,7 @@ public:
         EFI                            = 27,
         AD7091R5                       = 28,
         Scripting                      = 29,
+        JKBMS                          = 30,
     };
 
     FUNCTOR_TYPEDEF(battery_failsafe_handler_fn_t, void, const char *, const int8_t);
