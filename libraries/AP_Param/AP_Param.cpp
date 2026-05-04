@@ -934,6 +934,8 @@ AP_Param::find(const char *name, enum ap_var_type *ptype, uint16_t *flags)
                     ap->find_var_info(&group_element, ginfo, group_nesting, &idx);
                     if (ginfo != nullptr) {
                         *flags = ginfo->flags;
+                    } else {
+                        *flags = 0;
                     }
                 }
                 return ap;
@@ -946,6 +948,9 @@ AP_Param::find(const char *name, enum ap_var_type *ptype, uint16_t *flags)
             ptrdiff_t base;
             if (!get_base(info, base)) {
                 return nullptr;
+            }
+            if (flags != nullptr) {
+                *flags = 0;
             }
             return (AP_Param *)base;
         }
@@ -1266,6 +1271,7 @@ void AP_Param::save(bool force_save)
         if (hal.util->get_soft_armed() && hal.scheduler->in_main_thread()) {
             // if we are armed in main thread then don't sleep, instead we lose the
             // parameter save
+            INTERNAL_ERROR(AP_InternalError::error_t::flow_of_control);
             return;
         }
         // when we are disarmed then loop waiting for a slot to become
@@ -1359,8 +1365,7 @@ bool AP_Param::load(void)
         return false;
     }
 
-    AP_Param *ap;
-    ap = this;
+    AP_Param *ap = this;
     if (idx != 0) {
         ap = (AP_Param *)((ptrdiff_t)ap) - (idx*sizeof(float));
     }
@@ -1441,6 +1446,25 @@ bool AP_Param::is_read_only(void) const
         return read_only;
     }
     return false;
+}
+
+// returns true if this parameter should be settable via the
+// MAVLink interface:
+bool AP_Param::allow_set_via_mavlink(uint16_t flags) const
+{
+    if (is_read_only()) {
+        return false;
+    }
+
+    if (flags & AP_PARAM_FLAG_INTERNAL_USE_ONLY) {
+        // the user can set BRD_OPTIONS to enable set of internal
+        // parameters, for developer testing or unusual use cases
+        if (!AP_BoardConfig::allow_set_internal_parameters()) {
+            return false;
+        }
+    }
+
+    return true;
 }
 
 // set a AP_Param variable to a specified value
@@ -1973,8 +1997,7 @@ void AP_Param::convert_old_parameter(const struct ConversionInfo *info, float sc
 
     // find the new variable in the variable structures
     enum ap_var_type ptype;
-    AP_Param *ap2;
-    ap2 = find(&info->new_name[0], &ptype);
+    AP_Param *ap2 = find(&info->new_name[0], &ptype);
     if (ap2 == nullptr) {
         DEV_PRINTF("Unknown conversion '%s'\n", info->new_name);
         return;
@@ -2037,7 +2060,7 @@ void AP_Param::convert_old_parameters_scaled(const struct ConversionInfo *conver
 // is_top_level: Is true if the class had its own top level key, param_key. It is false if the class was a subgroup
 void AP_Param::convert_class(uint16_t param_key, void *object_pointer,
                                     const struct AP_Param::GroupInfo *group_info,
-                                    uint16_t old_index, uint16_t old_top_element, bool is_top_level)
+                                    uint16_t old_index, bool is_top_level)
 {
     const uint8_t group_shift = is_top_level ? 0 : 6;
 
@@ -2076,6 +2099,29 @@ void AP_Param::convert_class(uint16_t param_key, void *object_pointer,
     // we need to flush here to prevent a later set_default_by_name()
     // causing a save to be done on a converted parameter
     flush();
+}
+
+// convert an object which was stored in a vehicle's G2 into a new
+// object in AP_Vehicle.cpp:
+void AP_Param::convert_g2_objects(const void *g2, const G2ObjectConversion g2_conversions[], uint8_t num_conversions)
+{
+    // Find G2's Top Level Key
+    ConversionInfo info;
+    if (!find_top_level_key_by_pointer(g2, info.old_key)) {
+        return;
+    }
+    for (uint8_t i=0; i<num_conversions; i++) {
+        const auto &c { g2_conversions[i] };
+        convert_class(info.old_key, c.object_pointer, c.var_info, c.old_index, false);
+    }
+}
+
+void AP_Param::convert_toplevel_objects(const TopLevelObjectConversion conversions[], uint8_t num_conversions)
+{
+    for (uint8_t i=0; i<num_conversions; i++) {
+        const auto &c { conversions[i] };
+        convert_class(c.old_index, c.object_pointer, c.var_info, 0, true);
+    }
 }
 
 /*
@@ -2376,7 +2422,7 @@ bool AP_Param::load_defaults_file(const char *filename, bool last_pass)
     num_param_overrides = 0;
     num_read_only = 0;
 
-    param_overrides = new param_override[num_defaults];
+    param_overrides = NEW_NOTHROW param_override[num_defaults];
     if (param_overrides == nullptr) {
         AP_HAL::panic("AP_Param: Failed to allocate overrides");
         return false;
@@ -2471,7 +2517,7 @@ void AP_Param::load_param_defaults(const volatile char *ptr, int32_t length, boo
         return;
     }
 
-    param_overrides = new param_override[num_defaults];
+    param_overrides = NEW_NOTHROW param_override[num_defaults];
     if (param_overrides == nullptr) {
         AP_HAL::panic("AP_Param: Failed to allocate overrides");
         return;
@@ -2512,7 +2558,7 @@ void AP_Param::load_param_defaults(const volatile char *ptr, int32_t length, boo
         AP_Param *vp = find(pname, &var_type);
         if (!vp) {
             if (last_pass) {
-#if ENABLE_DEBUG
+#if ENABLE_DEBUG && (AP_PARAM_MAX_EMBEDDED_PARAM > 0)
                 ::printf("Ignored unknown param %s from embedded region (offset=%u)\n",
                          pname, unsigned(ptr - param_defaults_data.data));
                 hal.console->printf(
@@ -2867,7 +2913,7 @@ void AP_Param::add_default(AP_Param *ap, float v)
     }
 
     // add to list
-    defaults_list *new_item = new defaults_list;
+    defaults_list *new_item = NEW_NOTHROW defaults_list;
     if (new_item == nullptr) {
         return;
     }
@@ -2923,14 +2969,14 @@ void AP_Param::show_all(AP_HAL::BetterStream *port, bool showKeyValues)
     ParamToken token;
     AP_Param *ap;
     enum ap_var_type type;
-    float default_value = nanf("0x4152");  // from logger quiet_nanf
+    float default_value = NaNf;  // from logger quiet_nanf
 
     for (ap=AP_Param::first(&token, &type, &default_value);
          ap;
          ap=AP_Param::next_scalar(&token, &type, &default_value)) {
         if (showKeyValues) {
             ::printf("Key %u: Index %u: GroupElement %u : Default %f  :", (unsigned)var_info(token.key).key, (unsigned)token.idx, (unsigned)token.group_element, default_value);
-            default_value = nanf("0x4152");
+            default_value = NaNf;
         }
         show(ap, token, type, port);
         hal.scheduler->delay(1);
@@ -3066,22 +3112,23 @@ bool AP_Param::add_table(uint8_t _key, const char *prefix, uint8_t num_params)
             info.name = _empty_string;
             return false;
         }
-        // fill in footer for all entries
-        for (uint8_t gi=1; gi<num_params+2; gi++) {
-            auto &ginfo = const_cast<GroupInfo*>(info.group_info)[gi];
-            ginfo.name = _empty_string;
-            ginfo.idx = 0xff;
-        }
-        // hidden first parameter containing AP_Int32 crc
-        auto &hinfo = const_cast<GroupInfo*>(info.group_info)[0];
-        hinfo.flags = AP_PARAM_FLAG_HIDDEN;
-        hinfo.name = _empty_string;
-        hinfo.idx = 0;
-        hinfo.offset = 0;
-        hinfo.type = AP_PARAM_INT32;
-        // fill in default value with the CRC. Relies on sizeof crc == sizeof float
-        memcpy((uint8_t *)&hinfo.def_value, (const uint8_t *)&crc, sizeof(crc));
     }
+    // fill in footer for all entries
+    for (uint8_t gi=1; gi<num_params+2; gi++) {
+        auto &ginfo = const_cast<GroupInfo*>(info.group_info)[gi];
+        ginfo.name = _empty_string;
+        ginfo.idx = 0xff;
+        ginfo.flags = AP_PARAM_FLAG_HIDDEN;
+    }
+    // hidden first parameter containing AP_Int32 crc
+    auto &hinfo = const_cast<GroupInfo*>(info.group_info)[0];
+    hinfo.flags = AP_PARAM_FLAG_HIDDEN;
+    hinfo.name = _empty_string;
+    hinfo.idx = 0;
+    hinfo.offset = 0;
+    hinfo.type = AP_PARAM_INT32;
+    // fill in default value with the CRC. Relies on sizeof crc == sizeof float
+    memcpy((uint8_t *)&hinfo.def_value, (const uint8_t *)&crc, sizeof(crc));
 
     // remember the table size
     if (_dynamic_table_sizes[i] == 0) {
@@ -3201,13 +3248,18 @@ bool AP_Param::add_param(uint8_t _key, uint8_t param_num, const char *pname, flo
     *def_value = default_value;
     ginfo.type = AP_PARAM_FLOAT;
 
-    invalidate_count();
-
-    // load from storage if available
+    // load from storage if available, the param is hidden during this
+    // load so the param is not visible to MAVLink until after it is
+    // loaded
     AP_Float *pvalues = const_cast<AP_Float *>((const AP_Float *)info.ptr);
     AP_Float &p = pvalues[param_num];
     p.set_default(default_value);
     p.load();
+
+    // clear the hidden flag if set and invalidate the count
+    // so we recount the parameters
+    ginfo.flags = 0;
+    invalidate_count();
 
     return true;
 }

@@ -62,6 +62,7 @@ class BoardList(object):
         self.boards = [
             Board("erlebrain2"),
             Board("navigator"),
+            Board("navigator64"),
             Board("navio"),
             Board("navio2"),
             Board("edge"),
@@ -179,7 +180,6 @@ class BoardList(object):
             "f103-HWESC",
             "f103-Trigger",
             "G4-ESC",
-            "HerePro",
         ]
         ret = []
         for x in self.boards:

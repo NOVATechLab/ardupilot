@@ -9,6 +9,7 @@
 #include <AP_HAL/AP_HAL.h>
 
 #include <time.h>
+#include <sys/time.h>
 
 extern const AP_HAL::HAL& hal;
 
@@ -45,7 +46,8 @@ void GPS_NMEA::publish(const GPS_Data *d)
 
     simulation_timeval(&tv);
 
-    tm = gmtime(&tv.tv_sec);
+    struct tm tvd {};
+    tm = gmtime_r(&tv.tv_sec, &tvd);
 
     // format time string
     hal.util->snprintf(tstring, sizeof(tstring), "%02u%02u%06.3f", tm->tm_hour, tm->tm_min, tm->tm_sec + tv.tv_usec*1.0e-6);
@@ -72,7 +74,7 @@ void GPS_NMEA::publish(const GPS_Data *d)
                      lat_string,
                      lng_string,
                      d->have_lock?1:0,
-                     d->have_lock?_sitl->gps_numsats[instance]:3,
+                     d->have_lock?d->num_sats:3,
                      1.2,
                      d->altitude);
 
@@ -116,8 +118,8 @@ void GPS_NMEA::publish(const GPS_Data *d)
                     d->roll_deg,
                     d->have_lock?1:0, // 2=rtkfloat 3=rtkfixed,
                     3, // fixed rtk yaw solution,
-                    d->have_lock?_sitl->gps_numsats[instance]:3,
-                    d->have_lock?_sitl->gps_numsats[instance]:3,
+                    d->have_lock?d->num_sats:3,
+                    d->have_lock?d->num_sats:3,
                     d->speedE * 3.6,
                     d->speedN * 3.6,
                     -d->speedD * 3.6);

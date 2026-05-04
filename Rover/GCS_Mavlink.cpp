@@ -5,6 +5,7 @@
 #include <AP_RPM/AP_RPM_config.h>
 #include <AP_RangeFinder/AP_RangeFinder_Backend.h>
 #include <AP_EFI/AP_EFI_config.h>
+#include <AC_Avoidance/AP_OADatabase.h>
 
 MAV_TYPE GCS_Rover::frame_type() const
 {
@@ -123,11 +124,11 @@ void GCS_MAVLINK_Rover::send_servo_out()
 {
     float motor1, motor3;
     if (rover.g2.motors.have_skid_steering()) {
-        motor1 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_throttleLeft) / 1000.0f);
-        motor3 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_throttleRight) / 1000.0f);
+        motor1 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_throttleLeft) * 0.001f);
+        motor3 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_throttleRight) * 0.001f);
     } else {
         motor1 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_steering) / 4500.0f);
-        motor3 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_throttle) / 100.0f);
+        motor3 = 10000 * (SRV_Channels::get_output_scaled(SRV_Channel::k_throttle) * 0.01f);
     }
     mavlink_msg_rc_channels_scaled_send(
         chan,
@@ -141,7 +142,12 @@ void GCS_MAVLINK_Rover::send_servo_out()
         0,
         0,
         0,
-        receiver_rssi());
+#if AP_RSSI_ENABLED
+        receiver_rssi()
+#else
+        255
+#endif
+        );
 }
 
 int16_t GCS_MAVLINK_Rover::vfr_hud_throttle() const
@@ -178,6 +184,73 @@ void GCS_MAVLINK_Rover::send_rangefinder() const
         chan,
         distance,
         voltage);
+}
+
+void GCS_MAVLINK_Rover::send_water_depth()
+{
+    if (!HAVE_PAYLOAD_SPACE(chan, WATER_DEPTH)) {
+        return;
+    }
+
+    // only send for boats:
+    if (!rover.is_boat()) {
+        return;
+    }
+
+    RangeFinder *rangefinder = RangeFinder::get_singleton();
+
+    if (rangefinder == nullptr) {
+        return;
+    }
+
+    // depth can only be measured by a downward-facing rangefinder:
+    if (!rangefinder->has_orientation(ROTATION_PITCH_270)) {
+        return;
+    }
+
+    // get position
+    const AP_AHRS &ahrs = AP::ahrs();
+    Location loc;
+    IGNORE_RETURN(ahrs.get_location(loc));
+
+    const auto num_sensors = rangefinder->num_sensors();
+    for (uint8_t i=0; i<num_sensors; i++) {
+        last_WATER_DEPTH_index += 1;
+        if (last_WATER_DEPTH_index >= num_sensors) {
+            last_WATER_DEPTH_index = 0;
+        }
+
+        const AP_RangeFinder_Backend *s = rangefinder->get_backend(last_WATER_DEPTH_index);
+
+        if (s == nullptr || s->orientation() != ROTATION_PITCH_270 || !s->has_data()) {
+            continue;
+        }
+
+        // get temperature
+        float temp_C;
+        if (!s->get_temp(temp_C)) {
+            temp_C = 0.0f;
+        }
+
+        const bool sensor_healthy = (s->status() == RangeFinder::Status::Good);
+
+        mavlink_msg_water_depth_send(
+            chan,
+            AP_HAL::millis(),   // time since system boot TODO: take time of measurement
+            last_WATER_DEPTH_index, // rangefinder instance
+            sensor_healthy,     // sensor healthy
+            loc.lat,            // latitude of vehicle
+            loc.lng,            // longitude of vehicle
+            loc.alt * 0.01f,    // altitude of vehicle (MSL)
+            ahrs.get_roll(),    // roll in radians
+            ahrs.get_pitch(),   // pitch in radians
+            ahrs.get_yaw(),     // yaw in radians
+            s->distance(),    // distance in meters
+            temp_C);            // temperature in degC
+
+        break;  // only send one WATER_DEPTH message per loop
+    }
+
 }
 #endif  // AP_RANGEFINDER_ENABLED
 
@@ -380,6 +453,7 @@ bool GCS_MAVLINK_Rover::try_send_message(enum ap_message id)
         rover.g2.windvane.send_wind(chan);
         break;
 
+#if AP_OADATABASE_ENABLED
     case MSG_ADSB_VEHICLE: {
         AP_OADatabase *oadb = AP::oadatabase();
         if (oadb != nullptr) {
@@ -391,6 +465,14 @@ bool GCS_MAVLINK_Rover::try_send_message(enum ap_message id)
         }
         break;
     }
+#endif
+
+#if AP_RANGEFINDER_ENABLED
+    case MSG_WATER_DEPTH:
+        CHECK_PAYLOAD_SIZE(WATER_DEPTH);
+        send_water_depth();
+        break;
+#endif  // AP_RANGEFINDER_ENABLED
 
     default:
         return GCS_MAVLINK::try_send_message(id);
@@ -413,7 +495,7 @@ void GCS_MAVLINK_Rover::packetReceived(const mavlink_status_t &status, const mav
 const AP_Param::GroupInfo GCS_MAVLINK_Parameters::var_info[] = {
     // @Param: RAW_SENS
     // @DisplayName: Raw sensor stream rate
-    // @Description: MAVLink Stream rate of RAW_IMU, SCALED_IMU2, SCALED_IMU3, SCALED_PRESSURE, SCALED_PRESSURE2, and SCALED_PRESSURE3
+    // @Description: MAVLink Stream rate of RAW_IMU, SCALED_IMU2, SCALED_IMU3, SCALED_PRESSURE, SCALED_PRESSURE2, SCALED_PRESSURE3 and AIRSPEED
     // @Units: Hz
     // @Range: 0 50
     // @Increment: 1
@@ -521,6 +603,9 @@ static const ap_message STREAM_RAW_SENSORS_msgs[] = {
     MSG_SCALED_PRESSURE,
     MSG_SCALED_PRESSURE2,
     MSG_SCALED_PRESSURE3,
+#if AP_AIRSPEED_ENABLED
+    MSG_AIRSPEED,
+#endif
 };
 static const ap_message STREAM_EXTENDED_STATUS_msgs[] = {
     MSG_SYS_STATUS,
@@ -552,7 +637,9 @@ static const ap_message STREAM_RAW_CONTROLLER_msgs[] = {
 static const ap_message STREAM_RC_CHANNELS_msgs[] = {
     MSG_SERVO_OUTPUT_RAW,
     MSG_RC_CHANNELS,
+#if AP_MAVLINK_MSG_RC_CHANNELS_RAW_ENABLED
     MSG_RC_CHANNELS_RAW, // only sent on a mavlink1 connection
+#endif
 };
 static const ap_message STREAM_EXTRA1_msgs[] = {
     MSG_ATTITUDE,
@@ -570,6 +657,7 @@ static const ap_message STREAM_EXTRA3_msgs[] = {
     MSG_WIND,
 #if AP_RANGEFINDER_ENABLED
     MSG_RANGEFINDER,
+    MSG_WATER_DEPTH,
 #endif
     MSG_DISTANCE_SENSOR,
     MSG_SYSTEM_TIME,
@@ -653,14 +741,6 @@ MAV_RESULT GCS_MAVLINK_Rover::_handle_command_preflight_calibration(const mavlin
     return GCS_MAVLINK::_handle_command_preflight_calibration(packet, msg);
 }
 
-bool GCS_MAVLINK_Rover::set_home_to_current_location(bool _lock) {
-    return rover.set_home_to_current_location(_lock);
-}
-
-bool GCS_MAVLINK_Rover::set_home(const Location& loc, bool _lock) {
-    return rover.set_home(loc, _lock);
-}
-
 MAV_RESULT GCS_MAVLINK_Rover::handle_command_int_packet(const mavlink_command_int_t &packet, const mavlink_message_t &msg)
 {
     switch (packet.command) {
@@ -699,6 +779,10 @@ MAV_RESULT GCS_MAVLINK_Rover::handle_command_int_packet(const mavlink_command_in
                                               packet.param4);
 
     case MAV_CMD_MISSION_START:
+        if (!is_zero(packet.param1) || !is_zero(packet.param2)) {
+            // first-item/last item not supported
+            return MAV_RESULT_DENIED;
+        }
         if (rover.set_mode(rover.mode_auto, ModeReason::GCS_COMMAND)) {
             return MAV_RESULT_ACCEPTED;
         }
@@ -795,11 +879,6 @@ void GCS_MAVLINK_Rover::handle_message(const mavlink_message_t &msg)
         handle_set_position_target_global_int(msg);
         break;
 
-    case MAVLINK_MSG_ID_RADIO:
-    case MAVLINK_MSG_ID_RADIO_STATUS:
-        handle_radio(msg);
-        break;
-
     default:
         GCS_MAVLINK::handle_message(msg);
         break;
@@ -861,10 +940,14 @@ void GCS_MAVLINK_Rover::handle_set_position_target_local_ned(const mavlink_messa
     }
 
     // check for supported coordinate frames
-    if (packet.coordinate_frame != MAV_FRAME_LOCAL_NED &&
-        packet.coordinate_frame != MAV_FRAME_LOCAL_OFFSET_NED &&
-        packet.coordinate_frame != MAV_FRAME_BODY_NED &&
-        packet.coordinate_frame != MAV_FRAME_BODY_OFFSET_NED) {
+    switch (packet.coordinate_frame) {
+    case MAV_FRAME_LOCAL_NED:
+    case MAV_FRAME_LOCAL_OFFSET_NED:
+    case MAV_FRAME_BODY_NED:
+    case MAV_FRAME_BODY_OFFSET_NED:
+        break;
+
+    default:
         return;
     }
 
@@ -980,14 +1063,19 @@ void GCS_MAVLINK_Rover::handle_set_position_target_global_int(const mavlink_mess
         return;
     }
     // check for supported coordinate frames
-    if (packet.coordinate_frame != MAV_FRAME_GLOBAL &&
-        packet.coordinate_frame != MAV_FRAME_GLOBAL_INT &&
-        packet.coordinate_frame != MAV_FRAME_GLOBAL_RELATIVE_ALT &&
-        packet.coordinate_frame != MAV_FRAME_GLOBAL_RELATIVE_ALT_INT &&
-        packet.coordinate_frame != MAV_FRAME_GLOBAL_TERRAIN_ALT &&
-        packet.coordinate_frame != MAV_FRAME_GLOBAL_TERRAIN_ALT_INT) {
+    switch (packet.coordinate_frame) {
+    case MAV_FRAME_GLOBAL:
+    case MAV_FRAME_GLOBAL_INT:
+    case MAV_FRAME_GLOBAL_RELATIVE_ALT:
+    case MAV_FRAME_GLOBAL_RELATIVE_ALT_INT:
+    case MAV_FRAME_GLOBAL_TERRAIN_ALT:
+    case MAV_FRAME_GLOBAL_TERRAIN_ALT_INT:
+        break;
+
+    default:
         return;
     }
+    
     bool pos_ignore = packet.type_mask & MAVLINK_SET_POS_TYPE_MASK_POS_IGNORE;
     bool vel_ignore = packet.type_mask & MAVLINK_SET_POS_TYPE_MASK_VEL_IGNORE;
     bool acc_ignore = packet.type_mask & MAVLINK_SET_POS_TYPE_MASK_ACC_IGNORE;
@@ -1063,15 +1151,6 @@ void GCS_MAVLINK_Rover::handle_set_position_target_global_int(const mavlink_mess
         // consume just turn rate(probably only skid steering vehicles can do this)
         rover.mode_guided.set_desired_turn_rate_and_speed(target_turn_rate_cds, 0.0f);
     }
-}
-
-void GCS_MAVLINK_Rover::handle_radio(const mavlink_message_t &msg)
-{
-#if HAL_LOGGING_ENABLED
-    handle_radio_status(msg, rover.should_log(MASK_LOG_PM));
-#else
-    handle_radio_status(msg, false);
-#endif
 }
 
 /*

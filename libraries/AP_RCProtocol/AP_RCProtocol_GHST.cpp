@@ -280,6 +280,7 @@ bool AP_RCProtocol_GHST::decode_ghost_packet()
     const RadioFrame* radio_frame = (const RadioFrame*)(&_frame.payload);
     const Channels12Bit_4Chan* channels = &(radio_frame->channels);
     const uint8_t* lowres_channels = radio_frame->lowres_channels;
+    bool rc_frame = false;
 
     // Scaling from Betaflight
     // Scaling 12bit channels (8bit channels in brackets)
@@ -328,6 +329,7 @@ bool AP_RCProtocol_GHST::decode_ghost_packet()
             _channels[offset++] = CHANNEL_LR_SCALE_LEGACY(lowres_channels[1]);
             _channels[offset++] = CHANNEL_LR_SCALE_LEGACY(lowres_channels[2]);
             _channels[offset++] = CHANNEL_LR_SCALE_LEGACY(lowres_channels[3]);
+            rc_frame = true;
             break;
         }
         case GHST_UL_RC_CHANS_HS4_12_5TO8:
@@ -338,6 +340,7 @@ bool AP_RCProtocol_GHST::decode_ghost_packet()
             _channels[offset++] = CHANNEL_LR_SCALE(lowres_channels[1]);
             _channels[offset++] = CHANNEL_LR_SCALE(lowres_channels[2]);
             _channels[offset++] = CHANNEL_LR_SCALE(lowres_channels[3]);
+            rc_frame = true;
             break;
         }
         case GHST_UL_RC_CHANS_RSSI:
@@ -355,7 +358,7 @@ bool AP_RCProtocol_GHST::decode_ghost_packet()
     }
 #endif
 
-    return true;
+    return rc_frame;
 }
 
 // send out telemetry
@@ -441,10 +444,15 @@ void AP_RCProtocol_GHST::process_handshake(uint32_t baudrate)
         || baudrate != CRSF_BAUDRATE
         || baudrate == GHST_BAUDRATE
         || uart->get_baud_rate() == GHST_BAUDRATE
-        || !protocol_enabled(AP_RCProtocol::GHST)
-        || protocol_enabled(AP_RCProtocol::CRSF)) {
+        || !protocol_enabled(AP_RCProtocol::GHST)) {
         return;
     }
+#if AP_RCPROTOCOL_CRSF_ENABLED
+    if (protocol_enabled(AP_RCProtocol::CRSF)) {
+        // don't fight CRSF
+        return;
+    }
+#endif
 
     uart->begin(GHST_BAUDRATE);
 }

@@ -157,6 +157,11 @@ build.tmp.binaries/
 tasklist.json
 modules/esp_idf
 
+# lua-language-server linter
+ScriptingDocs.md
+/lua-language-server/
+repo-LuaLS-lua-language-server.cache
+
 # Ignore Python virtual environments
 #   from: https://github.com/github/gitignore/blob/4488915eec0b3a45b5c63ead28f286819c0917de/Python.gitignore#L125
 .env
@@ -167,3 +172,7 @@ ENV/
 env.bak/
 venv.bak/
 autotest_result_*_junit.xml
+
+# Ignore ESP-IDF SDK defines
+/libraries/AP_HAL_ESP32/targets/esp32/esp-idf/sdkconfig
+/libraries/AP_HAL_ESP32/targets/esp32s3/esp-idf/sdkconfig

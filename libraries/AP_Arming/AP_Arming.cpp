@@ -13,6 +13,10 @@
    along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "AP_Arming_config.h"
+
+#if AP_ARMING_ENABLED
+
 #include "AP_Arming.h"
 #include <AP_HAL/AP_HAL.h>
 #include <AP_BoardConfig/AP_BoardConfig.h>
@@ -40,7 +44,6 @@
 #include <AP_Scripting/AP_Scripting.h>
 #include <AP_Camera/AP_RunCam.h>
 #include <AP_GyroFFT/AP_GyroFFT.h>
-#include <AP_RCMapper/AP_RCMapper.h>
 #include <AP_VisualOdom/AP_VisualOdom.h>
 #include <AP_Parachute/AP_Parachute.h>
 #include <AP_OSD/AP_OSD.h>
@@ -56,6 +59,7 @@
 #include <AP_Scheduler/AP_Scheduler.h>
 #include <AP_KDECAN/AP_KDECAN.h>
 #include <AP_Vehicle/AP_Vehicle.h>
+#include <AP_ICEngine/AP_ICEngine.h>
 
 #if HAL_MAX_CAN_PROTOCOL_DRIVERS
   #include <AP_CANManager/AP_CANManager.h>
@@ -81,6 +85,26 @@
 #else
   #define ARMING_RUDDER_DEFAULT         (uint8_t)RudderArming::ARMDISARM
 #endif
+
+// find a default value for ARMING_NEED_POS parameter, and determine
+// whether the parameter should be shown:
+#ifndef AP_ARMING_NEED_LOC_PARAMETER_ENABLED
+// determine whether ARMING_NEED_POS is shown:
+#if APM_BUILD_COPTER_OR_HELI
+#define AP_ARMING_NEED_LOC_PARAMETER_ENABLED 1
+#else
+#define AP_ARMING_NEED_LOC_PARAMETER_ENABLED 0
+#endif  // build types
+#endif  // AP_ARMING_NEED_LOC_PARAMETER_ENABLED
+
+// if ARMING_NEED_POS is shown, determine what its default should be:
+#if AP_ARMING_NEED_LOC_PARAMETER_ENABLED
+#if APM_BUILD_COPTER_OR_HELI
+#define AP_ARMING_NEED_LOC_DEFAULT 0
+#else
+#error "Unable to find value for AP_ARMING_NEED_LOC_DEFAULT"
+#endif  // APM_BUILD_TYPE
+#endif  // AP_ARMING_NEED_LOC_PARAMETER_ENABLED
 
 #ifndef PREARM_DISPLAY_PERIOD
 # define PREARM_DISPLAY_PERIOD 30
@@ -112,7 +136,7 @@ const AP_Param::GroupInfo AP_Arming::var_info[] = {
     // index 4 was VOLT_MIN, moved to AP_BattMonitor
     // index 5 was VOLT2_MIN, moved to AP_BattMonitor
 
-    // @Param: RUDDER
+    // @Param{Plane,Rover,Copter,Blimp}: RUDDER
     // @DisplayName: Arming with Rudder enable/disable
     // @Description: Allow arm/disarm by rudder input. When enabled arming can be done with right rudder, disarming with left rudder. Rudder arming only works with throttle at zero +- deadzone (RCx_DZ). Depending on vehicle type, arming in certain modes is prevented. See the wiki for each vehicle. Caution is recommended when arming if it is allowed in an auto-throttle mode!
     // @Values: 0:Disabled,1:ArmingOnly,2:ArmOrDisarm
@@ -142,7 +166,7 @@ const AP_Param::GroupInfo AP_Arming::var_info[] = {
     // @Param: OPTIONS
     // @DisplayName: Arming options
     // @Description: Options that can be applied to change arming behaviour
-    // @Values: 0:None,1:Disable prearm display,2:Do not send status text on state change
+    // @Bitmask: 0:Disable prearm display,1:Do not send status text on state change,2:Skip IMU consistency checks when ICE motor running
     // @User: Advanced
     AP_GROUPINFO("OPTIONS", 9,   AP_Arming, _arming_options, 0),
 
@@ -162,6 +186,15 @@ const AP_Param::GroupInfo AP_Arming::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("CRSDP_IGN", 11, AP_Arming, crashdump_ack.acked, 0),
 #endif  // AP_ARMING_CRASHDUMP_ACK_ENABLED
+
+#if AP_ARMING_NEED_LOC_PARAMETER_ENABLED
+    // @Param: NEED_LOC
+    // @DisplayName: Require vehicle location
+    // @Description: Require that the vehicle have an absolute position before it arms.  This can help ensure that the vehicle can Return To Launch.
+    // @User: Advanced
+    // @Values{Copter}: 0:Do not require location,1:Require Location
+    AP_GROUPINFO("NEED_LOC", 12, AP_Arming, require_location, float(AP_ARMING_NEED_LOC_DEFAULT)),
+#endif  // AP_ARMING_NEED_LOC_PARAMETER_ENABLED
 
     AP_GROUPEND
 };
@@ -381,50 +414,22 @@ bool AP_Arming::logging_checks(bool report)
 #if AP_INERTIALSENSOR_ENABLED
 bool AP_Arming::ins_accels_consistent(const AP_InertialSensor &ins)
 {
-    const uint8_t accel_count = ins.get_accel_count();
-    if (accel_count <= 1) {
-        return true;
-    }
-
-    const Vector3f &prime_accel_vec = ins.get_accel();
     const uint32_t now = AP_HAL::millis();
-    for(uint8_t i=0; i<accel_count; i++) {
-        if (!ins.use_accel(i)) {
-            continue;
-        }
-        // get next accel vector
-        const Vector3f &accel_vec = ins.get_accel(i);
-        Vector3f vec_diff = accel_vec - prime_accel_vec;
-        // allow for user-defined difference, typically 0.75 m/s/s. Has to pass in last 10 seconds
-        float threshold = accel_error_threshold;
-        if (i >= 2) {
-            /*
-              we allow for a higher threshold for IMU3 as it
-              runs at a different temperature to IMU1/IMU2,
-              and is not used for accel data in the EKF
-            */
-            threshold *= 3;
-        }
-
-        // EKF is less sensitive to Z-axis error
-        vec_diff.z *= 0.5f;
-
-        if (vec_diff.length() > threshold) {
-            // this sensor disagrees with the primary sensor, so
-            // accels are inconsistent:
-            last_accel_pass_ms = 0;
-            return false;
-        }
+    if (!ins.accels_consistent(accel_error_threshold)) {
+        // accels are inconsistent:
+        last_accel_pass_ms = 0;
+        return false;
     }
 
     if (last_accel_pass_ms == 0) {
-        // we didn't return false in the loop above, so sensors are
+        // we didn't return false above, so sensors are
         // consistent right now:
         last_accel_pass_ms = now;
     }
 
+    // if accels can in theory be inconsistent,
     // must pass for at least 10 seconds before we're considered consistent:
-    if (now - last_accel_pass_ms < 10000) {
+    if (ins.get_accel_count() > 1 && now - last_accel_pass_ms < 10000) {
         return false;
     }
 
@@ -433,37 +438,23 @@ bool AP_Arming::ins_accels_consistent(const AP_InertialSensor &ins)
 
 bool AP_Arming::ins_gyros_consistent(const AP_InertialSensor &ins)
 {
-    const uint8_t gyro_count = ins.get_gyro_count();
-    if (gyro_count <= 1) {
-        return true;
-    }
-
-    const Vector3f &prime_gyro_vec = ins.get_gyro();
     const uint32_t now = AP_HAL::millis();
-    for(uint8_t i=0; i<gyro_count; i++) {
-        if (!ins.use_gyro(i)) {
-            continue;
-        }
-        // get next gyro vector
-        const Vector3f &gyro_vec = ins.get_gyro(i);
-        const Vector3f vec_diff = gyro_vec - prime_gyro_vec;
-        // allow for up to 5 degrees/s difference
-        if (vec_diff.length() > radians(5)) {
-            // this sensor disagrees with the primary sensor, so
-            // gyros are inconsistent:
-            last_gyro_pass_ms = 0;
-            return false;
-        }
+    // allow for up to 5 degrees/s difference
+    if (!ins.gyros_consistent(5)) {
+        // gyros are inconsistent:
+        last_gyro_pass_ms = 0;
+        return false;
     }
 
-    // we didn't return false in the loop above, so sensors are
+    // we didn't return false above, so sensors are
     // consistent right now:
     if (last_gyro_pass_ms == 0) {
         last_gyro_pass_ms = now;
     }
 
+    // if gyros can in theory be inconsistent,
     // must pass for at least 10 seconds before we're considered consistent:
-    if (now - last_gyro_pass_ms < 10000) {
+    if (ins.get_gyro_count() > 1 && now - last_gyro_pass_ms < 10000) {
         return false;
     }
 
@@ -497,16 +488,34 @@ bool AP_Arming::ins_checks(bool report)
             return false;
         }
 
-        // check all accelerometers point in roughly same direction
-        if (!ins_accels_consistent(ins)) {
-            check_failed(ARMING_CHECK_INS, report, "Accels inconsistent");
-            return false;
+        bool run_imu_consistency_check = true;
+#if AP_ICENGINE_ENABLED
+        if (option_enabled(Option::SKIP_IMU_CONSISTENCY_ICE_RUNNING)) {
+            // ICE motors can greatly disturb the IMU, so we get arming failures
+            // due to gyro (and sometimes accel) inconsistency. Allow this check to be
+            // disabled while the motor is running
+            auto ice = AP::ice();
+            if (ice != nullptr) {
+                const auto ice_state = ice->get_state();
+                if (ice_state == AP_ICEngine::ICE_STARTING || ice_state == AP_ICEngine::ICE_RUNNING) {
+                    run_imu_consistency_check = false;
+                }
+            }
         }
+#endif
 
-        // check all gyros are giving consistent readings
-        if (!ins_gyros_consistent(ins)) {
-            check_failed(ARMING_CHECK_INS, report, "Gyros inconsistent");
-            return false;
+        if (run_imu_consistency_check) {
+            // check all accelerometers point in roughly same direction
+            if (!ins_accels_consistent(ins)) {
+                check_failed(ARMING_CHECK_INS, report, "Accels inconsistent");
+                return false;
+            }
+
+            // check all gyros are giving consistent readings
+            if (!ins_gyros_consistent(ins)) {
+                check_failed(ARMING_CHECK_INS, report, "Gyros inconsistent");
+                return false;
+            }
         }
 
         // no arming while doing temp cal
@@ -523,6 +532,12 @@ bool AP_Arming::ins_checks(bool report)
         }
 #endif
 
+        // check if IMU gyro updates are greater than or equal to Ardupilot Loop rate
+        char fail_msg[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN+1];
+        if (!ins.pre_arm_check_gyro_backend_rate_hz(fail_msg, ARRAY_SIZE(fail_msg))) {
+            check_failed(ARMING_CHECK_INS, report, "%s", fail_msg);
+            return false;
+        }
     }
 
 #if HAL_GYROFFT_ENABLED
@@ -581,7 +596,7 @@ bool AP_Arming::compass_checks(bool report)
         if (!_compass.learn_offsets_enabled())
 #endif
         {
-            char failure_msg[50] = {};
+            char failure_msg[100] = {};
             if (!_compass.configured(failure_msg, ARRAY_SIZE(failure_msg))) {
                 check_failed(ARMING_CHECK_COMPASS, report, "%s", failure_msg);
                 return false;
@@ -640,8 +655,8 @@ bool AP_Arming::gps_checks(bool report)
     if (check_enabled(ARMING_CHECK_GPS)) {
 
         // Any failure messages from GPS backends
-        char failure_msg[50] = {};
-        if (!AP::gps().backends_healthy(failure_msg, ARRAY_SIZE(failure_msg))) {
+        char failure_msg[100] = {};
+        if (!AP::gps().pre_arm_checks(failure_msg, ARRAY_SIZE(failure_msg))) {
             if (failure_msg[0] != '\0') {
                 check_failed(ARMING_CHECK_GPS, report, "%s", failure_msg);
             }
@@ -649,7 +664,7 @@ bool AP_Arming::gps_checks(bool report)
         }
 
         for (uint8_t i = 0; i < gps.num_sensors(); i++) {
-#if defined(GPS_BLENDED_INSTANCE)
+#if AP_GPS_BLENDED_ENABLED
             if ((i != GPS_BLENDED_INSTANCE) &&
 #else
             if (
@@ -687,12 +702,6 @@ bool AP_Arming::gps_checks(bool report)
                          (double)distance_m);
             return false;
         }
-#if defined(GPS_BLENDED_INSTANCE)
-        if (!gps.blend_health_check()) {
-            check_failed(ARMING_CHECK_GPS, report, "GPS blending unhealthy");
-            return false;
-        }
-#endif
 
         // check AHRS and GPS are within 10m of each other
         if (gps.num_sensors() > 0) {
@@ -780,19 +789,21 @@ bool AP_Arming::rc_arm_checks(AP_Arming::Method method)
         check_failed(ARMING_CHECK_PARAMETERS, true, "Mode channel and RC%d_OPTION conflict", rc().flight_mode_channel_number());
         check_passed = false;
     }
-    const RCMapper * rcmap = AP::rcmap();
-    if (rcmap != nullptr) {
+    {
         if (!rc().option_is_enabled(RC_Channels::Option::ARMING_SKIP_CHECK_RPY)) {
-            const char *names[3] = {"Roll", "Pitch", "Yaw"};
-            const uint8_t channels[3] = {rcmap->roll(), rcmap->pitch(), rcmap->yaw()};
-            for (uint8_t i = 0; i < ARRAY_SIZE(channels); i++) {
-                const RC_Channel *c = rc().channel(channels[i] - 1);
-                if (c == nullptr) {
-                    continue;
-                }
+            const struct {
+                const char *name;
+                const RC_Channel *channel;
+            } channels_to_check[] {
+                { "Roll", &rc().get_roll_channel(), },
+                { "Pitch", &rc().get_pitch_channel(), },
+                { "Yaw", &rc().get_yaw_channel(), },
+            };
+            for (const auto &channel_to_check : channels_to_check) {
+                const auto *c = channel_to_check.channel;
                 if (c->get_control_in() != 0) {
                     if ((method != Method::RUDDER) || (c != rc().get_arming_channel())) { // ignore the yaw input channel if rudder arming
-                        check_failed(ARMING_CHECK_RC, true, "%s (RC%d) is not neutral", names[i], channels[i]);
+                        check_failed(ARMING_CHECK_RC, true, "%s (RC%d) is not neutral", channel_to_check.name, c->ch());
                         check_passed = false;
                     }
                 }
@@ -801,13 +812,11 @@ bool AP_Arming::rc_arm_checks(AP_Arming::Method method)
 
         // if throttle check is enabled, require zero input
         if (rc().arming_check_throttle()) {
-            RC_Channel *c = rc().channel(rcmap->throttle() - 1);
-            if (c != nullptr) {
+            const RC_Channel *c = &rc().get_throttle_channel();
                 if (c->get_control_in() != 0) {
-                    check_failed(ARMING_CHECK_RC, true, "Throttle (RC%d) is not neutral", rcmap->throttle());
+                    check_failed(ARMING_CHECK_RC, true, "%s (RC%d) is not neutral", "Throttle", c->ch());
                     check_passed = false;
                 }
-            }
             c = rc().find_channel_for_option(RC_Channel::AUX_FUNC::FWD_THR);
             if (c != nullptr) {
                 uint8_t fwd_thr = c->percent_input();
@@ -954,6 +963,7 @@ bool AP_Arming::mission_checks(bool report)
 
 bool AP_Arming::rangefinder_checks(bool report)
 {
+#if AP_RANGEFINDER_ENABLED
     if (check_enabled(ARMING_CHECK_RANGEFINDER)) {
         RangeFinder *range = RangeFinder::get_singleton();
         if (range == nullptr) {
@@ -966,6 +976,7 @@ bool AP_Arming::rangefinder_checks(bool report)
             return false;
         }
     }
+#endif
 
     return true;
 }
@@ -1132,6 +1143,11 @@ bool AP_Arming::system_checks(bool report)
     }
 
     if (check_enabled(ARMING_CHECK_PARAMETERS)) {
+#if !AP_GPS_BLENDED_ENABLED
+        if (!blending_auto_switch_checks(report)) {
+            return false;
+        }
+#endif
 #if AP_RPM_ENABLED
         auto *rpm = AP::rpm();
         if (rpm && !rpm->arming_checks(sizeof(buffer), buffer)) {
@@ -1242,7 +1258,7 @@ bool AP_Arming::proximity_checks(bool report) const
 bool AP_Arming::can_checks(bool report)
 {
     if (check_enabled(ARMING_CHECK_SYSTEM)) {
-        char fail_msg[50] = {};
+        char fail_msg[100] = {};
         (void)fail_msg; // might be left unused
         uint8_t num_drivers = AP::can().get_num_drivers();
 
@@ -1276,7 +1292,7 @@ bool AP_Arming::can_checks(bool report)
                 }
                 case AP_CAN::Protocol::USD1:
                 case AP_CAN::Protocol::TOFSenseP:
-                case AP_CAN::Protocol::NanoRadar:
+                case AP_CAN::Protocol::RadarCAN:
                 case AP_CAN::Protocol::Benewake:
                 {
                     for (uint8_t j = i; j; j--) {
@@ -1311,16 +1327,12 @@ bool AP_Arming::fence_checks(bool display_failure)
     }
 
     // check fence is ready
-    const char *fail_msg = nullptr;
-    if (fence->pre_arm_check(fail_msg)) {
+    char fail_msg[MAVLINK_MSG_STATUSTEXT_FIELD_TEXT_LEN+1];
+    if (fence->pre_arm_check(fail_msg, ARRAY_SIZE(fail_msg))) {
         return true;
     }
 
-    if (fail_msg == nullptr) {
-        check_failed(display_failure, "Check fence");
-    } else {
-        check_failed(display_failure, "%s", fail_msg);
-    }
+    check_failed(display_failure, "%s", fail_msg);
 
 #if AP_SDCARD_STORAGE_ENABLED
     if (fence->failed_sdcard_storage() || StorageManager::storage_failed()) {
@@ -1535,7 +1547,7 @@ bool AP_Arming::generator_checks(bool display_failure) const
     if (generator == nullptr) {
         return true;
     }
-    char failure_msg[50] = {};
+    char failure_msg[100] = {};
     if (!generator->pre_arm_check(failure_msg, sizeof(failure_msg))) {
         check_failed(display_failure, "Generator: %s", failure_msg);
         return false;
@@ -1550,7 +1562,7 @@ bool AP_Arming::opendroneid_checks(bool display_failure)
 {
     auto &opendroneid = AP::opendroneid();
 
-    char failure_msg[50] {};
+    char failure_msg[100] {};
     if (!opendroneid.pre_arm_check(failure_msg, sizeof(failure_msg))) {
         check_failed(display_failure, "OpenDroneID: %s", failure_msg);
         return false;
@@ -1726,6 +1738,19 @@ bool AP_Arming::arm_checks(AP_Arming::Method method)
     return true;
 }
 
+#if !AP_GPS_BLENDED_ENABLED
+bool AP_Arming::blending_auto_switch_checks(bool report)
+{
+    if (AP::gps().get_auto_switch_type() == 2) {
+        if (report) {
+            check_failed(ARMING_CHECK_GPS, true, "GPS_AUTO_SWITCH==2 but no blending");
+        }
+        return false;
+    }
+    return true;
+}
+#endif
+
 #if AP_ARMING_CRASHDUMP_ACK_ENABLED
 bool AP_Arming::crashdump_checks(bool report)
 {
@@ -1815,11 +1840,7 @@ bool AP_Arming::arm(AP_Arming::Method method, const bool do_arming_checks)
     if (armed) {
         auto *fence = AP::fence();
         if (fence != nullptr) {
-            // If a fence is set to auto-enable, turn on the fence
-            if (fence->auto_enabled() == AC_Fence::AutoEnable::ONLY_WHEN_ARMED) {
-                fence->enable(true);
-                GCS_SEND_TEXT(MAV_SEVERITY_INFO, "Fence: auto-enabled");
-            }
+            fence->auto_enable_fence_on_arming();
         }
     }
 #endif
@@ -1862,9 +1883,7 @@ bool AP_Arming::disarm(const AP_Arming::Method method, bool do_disarm_checks)
 #if AP_FENCE_ENABLED
     AC_Fence *fence = AP::fence();
     if (fence != nullptr) {
-        if(fence->auto_enabled() == AC_Fence::AutoEnable::ONLY_WHEN_ARMED) {
-            fence->enable(false);
-        }
+        fence->auto_disable_fence_on_disarming();
     }
 #endif
 #if defined(HAL_ARM_GPIO_PIN)
@@ -2071,3 +2090,5 @@ AP_Arming &arming()
 };
 
 #pragma GCC diagnostic pop
+
+#endif  // AP_ARMING_ENABLED

@@ -5,6 +5,13 @@
    assistance from Paul Riseborough, testing by Henry Wurzburg
 ]]--
 -- luacheck: ignore 212 (Unused argument)
+---@diagnostic disable: param-type-mismatch
+---@diagnostic disable: undefined-field
+---@diagnostic disable: missing-parameter
+---@diagnostic disable: cast-local-type
+---@diagnostic disable: need-check-nil
+---@diagnostic disable: undefined-global
+---@diagnostic disable: inject-field
 
 -- setup param block for aerobatics, reserving 35 params beginning with AERO_
 local PARAM_TABLE_KEY = 70
@@ -2117,7 +2124,9 @@ end
 
 -- log a pose from position and quaternion attitude
 function log_pose(logname, pos, quat)
-   logger.write(logname, 'px,py,pz,q1,q2,q3,q4,r,p,y', 'ffffffffff',
+   local loc = ahrs:get_origin():copy()
+   loc:offset(pos:x(),pos:y())
+   logger.write(logname, 'px,py,pz,q1,q2,q3,q4,r,p,y,Lat,Lon', 'ffffffffffLL',
                 pos:x(),
                 pos:y(),
                 pos:z(),
@@ -2127,11 +2136,15 @@ function log_pose(logname, pos, quat)
                 quat:q4(),
                 math.deg(quat:get_euler_roll()),
                 math.deg(quat:get_euler_pitch()),
-                math.deg(quat:get_euler_yaw()))
+                math.deg(quat:get_euler_yaw()),
+                loc:lat(),
+                loc:lng())
 end
 
-
-function log_position(logname, loc, quat)
+--[[
+   get GPS week and MS, coping with crossing a week boundary
+--]]
+function get_gps_times()
    local gps_last_fix_ms1 = gps:last_fix_time_ms(0)
    local gps_week = gps:time_week(0)
    local gps_week_ms = gps:time_week_ms(0)
@@ -2144,6 +2157,11 @@ function log_position(logname, loc, quat)
       gps_week_ms = gps:time_week_ms(0)
    end
    gps_week_ms = gps_week_ms + (now_ms - gps_last_fix_ms2)
+   return gps_week, gps_week_ms
+end
+
+function log_position(logname, loc, quat)
+   local gps_week, gps_week_ms = get_gps_times()
 
    logger.write(logname, 'I,GWk,GMS,Lat,Lon,Alt,R,P,Y',
                 'BHILLffff',
@@ -2359,8 +2377,15 @@ function handle_speed_adjustment()
          path_var.speed_adjustment = 0.0
       end
 
-      logger.write("PTHT",'SysID,RemT,LocT,TS,RemTS,PathT,RemPathT,Dt,ARPT,DE,SA','Bffffffffff',
-                   sysid, remote_t, local_t,
+      local gps_week, gps_week_ms = get_gps_times()
+      logger.write("PTHT",
+                   'SysID,GWk,GMS,RemT,LocT,TS,RTS,PT,RPT,Dt,ARPT,DE,SA',
+                   'BHIffffffffff',
+                   '#------------',
+                   '-------------',
+                   sysid,
+                   gps_week, gps_week_ms,
+                   remote_t, local_t,
                    loc_timestamp,
                    remote_timestamp,
                    path_var.path_t, rem_patht,
@@ -2703,8 +2728,10 @@ function do_path()
                    lookahead_bf_dps:y(),
                    path_rate_bf_dps:z(),
                    lookahead_bf_dps:z())
-      path_rate_bf_dps:y(lookahead_bf_dps:y())
-      path_rate_bf_dps:z(lookahead_bf_dps:z())
+      if not Vec3IsNaN(lookahead_bf_dps) then
+         path_rate_bf_dps:y(lookahead_bf_dps:y())
+         path_rate_bf_dps:z(lookahead_bf_dps:z())
+      end
    end
    
    --[[

@@ -4,6 +4,7 @@
 #include <AP_Logger/AP_Logger.h>
 #include <AP_Airspeed/AP_Airspeed_config.h>
 #include "quadplane.h"
+#include "defines.h"
 
 class GCS_MAVLINK_Plane : public GCS_MAVLINK
 {
@@ -17,6 +18,10 @@ public:
 protected:
 
     uint32_t telem_delay() const override;
+
+#if HAL_LOGGING_ENABLED
+    uint32_t log_radio_bit() const override { return MASK_LOG_PM; }
+#endif
 
 #if AP_MAVLINK_MISSION_SET_CURRENT_ENABLED
     void handle_mission_set_current(AP_Mission &mission, const mavlink_message_t &msg) override;
@@ -37,8 +42,6 @@ protected:
 
     bool persist_streamrates() const override { return true; }
 
-    bool set_home_to_current_location(bool lock) override WARN_IF_UNUSED;
-    bool set_home(const Location& loc, bool lock) override WARN_IF_UNUSED;
     uint64_t capabilities() const override;
 
     void send_nav_controller_output() const override;
@@ -53,14 +56,19 @@ private:
 
     void handle_message(const mavlink_message_t &msg) override;
     bool handle_guided_request(AP_Mission::Mission_Command &cmd) override;
-    void handle_change_alt_request(AP_Mission::Mission_Command &cmd) override;
+    void handle_change_alt_request(Location &location) override;
     MAV_RESULT handle_command_int_do_reposition(const mavlink_command_int_t &packet);
+    MAV_RESULT handle_command_int_DO_CHANGE_ALTITUDE(const mavlink_command_int_t &packet);
     MAV_RESULT handle_command_int_guided_slew_commands(const mavlink_command_int_t &packet);
     MAV_RESULT handle_MAV_CMD_DO_AUTOTUNE_ENABLE(const mavlink_command_int_t &packet);
     MAV_RESULT handle_command_DO_CHANGE_SPEED(const mavlink_command_int_t &packet);
     MAV_RESULT handle_MAV_CMD_DO_MOTOR_TEST(const mavlink_command_int_t &packet);
     MAV_RESULT handle_MAV_CMD_DO_PARACHUTE(const mavlink_command_int_t &packet);
     MAV_RESULT handle_command_DO_VTOL_TRANSITION(const mavlink_command_int_t &packet);
+
+    void handle_set_position_target_global_int(const mavlink_message_t &msg);
+    void handle_set_position_target_local_ned(const mavlink_message_t &msg);
+    void handle_set_attitude_target(const mavlink_message_t &msg);
 
 #if HAL_QUADPLANE_ENABLED
 #if AP_MAVLINK_COMMAND_LONG_ENABLED
@@ -75,8 +83,6 @@ private:
 
     MAV_MODE base_mode() const override;
     MAV_STATE vehicle_system_status() const override;
-
-    uint8_t radio_in_rssi() const;
 
     float vfr_hud_airspeed() const override;
     int16_t vfr_hud_throttle() const override;

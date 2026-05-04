@@ -39,12 +39,11 @@
 #include <AP_AccelCal/AP_AccelCal.h>                // interface and maths for accelerometer calibration
 #include <AP_AHRS/AP_AHRS.h>         // ArduPilot Mega DCM Library
 #include <SRV_Channel/SRV_Channel.h>
-#include <AP_RangeFinder/AP_RangeFinder.h>     // Range finder library
+#include <AP_RangeFinder/AP_RangeFinder_config.h>     // Range finder library
 #include <Filter/Filter.h>                     // Filter library
 #include <AP_Camera/AP_Camera.h>          // Photo or video camera
 #include <AP_Terrain/AP_Terrain.h>
 #include <AP_RPM/AP_RPM.h>
-#include <AP_Stats/AP_Stats.h>     // statistics library
 #include <AP_Beacon/AP_Beacon.h>
 
 #include <AP_AdvancedFailsafe/AP_AdvancedFailsafe.h>
@@ -122,6 +121,8 @@
 #include "avoidance_adsb.h"
 #endif
 #include "AP_Arming.h"
+#include "pullup.h"
+#include "systemid.h"
 
 /*
   main APM:Plane class
@@ -144,6 +145,7 @@ public:
     friend class Tiltrotor;
     friend class SLT_Transition;
     friend class Tailsitter_Transition;
+    friend class VTOL_Assist;
 
     friend class Mode;
     friend class ModeCircle;
@@ -175,6 +177,12 @@ public:
 #if AP_EXTERNAL_CONTROL_ENABLED
     friend class AP_ExternalControl_Plane;
 #endif
+#if AP_PLANE_GLIDER_PULLUP_ENABLED
+    friend class GliderPullup;
+#endif
+#if AP_PLANE_SYSTEMID_ENABLED
+    friend class AP_SystemID;
+#endif
 
     Plane(void);
 
@@ -198,10 +206,6 @@ private:
     RC_Channel *channel_flap;
     RC_Channel *channel_airbrake;
 
-#if HAL_LOGGING_ENABLED
-    AP_Logger logger;
-#endif
-
     // scaled roll limit based on pitch
     int32_t roll_limit_cd;
     float pitch_limit_min;
@@ -210,7 +214,31 @@ private:
     AP_Int8 *flight_modes = &g.flight_mode1;
     const uint8_t num_flight_modes = 6;
 
+#if AP_RANGEFINDER_ENABLED
     AP_FixedWing::Rangefinder_State rangefinder_state;
+
+    /*
+      orientation of rangefinder to use for landing
+     */
+    Rotation rangefinder_orientation(void) const {
+        return Rotation(g2.rangefinder_land_orient.get());
+    }
+
+#endif
+
+#if AP_MAVLINK_MAV_CMD_SET_HAGL_ENABLED
+    struct {
+        // allow for external height above ground estimate
+        float hagl;
+        uint32_t last_update_ms;
+        uint32_t timeout_ms;
+    } external_hagl;
+    bool get_external_HAGL(float &height_agl);
+    void handle_external_hagl(const mavlink_command_int_t &packet);
+#endif // AP_MAVLINK_MAV_CMD_SET_HAGL_ENABLED
+
+    float get_landing_height(bool &using_rangefinder);
+
 
 #if AP_RPM_ENABLED
     AP_RPM rpm_sensor;
@@ -307,6 +335,10 @@ private:
     ModeThermal mode_thermal;
 #endif
 
+#if AP_QUICKTUNE_ENABLED
+    AP_Quicktune quicktune;
+#endif
+    
     // This is the state of the flight control system
     // There are multiple states defined such as MANUAL, FBW-A, AUTO
     Mode *control_mode = &mode_initializing;
@@ -354,19 +386,20 @@ private:
         uint32_t AFS_last_valid_rc_ms;
     } failsafe;
 
-    enum Landing_ApproachStage {
-        RTL,
-        LOITER_TO_ALT,
-        ENSURE_RADIUS,
-        WAIT_FOR_BREAKOUT,
-        APPROACH_LINE,
-        VTOL_LANDING,
-    };
-
 #if HAL_QUADPLANE_ENABLED
     // Landing
-    struct {
-        enum Landing_ApproachStage approach_stage;
+    class VTOLApproach {
+    public:
+        enum class Stage {
+            RTL,
+            LOITER_TO_ALT,
+            ENSURE_RADIUS,
+            WAIT_FOR_BREAKOUT,
+            APPROACH_LINE,
+            VTOL_LANDING,
+        };
+
+        Stage approach_stage;
         float approach_direction_deg;
     } vtol_approach_s;
 #endif
@@ -403,9 +436,7 @@ private:
     // The amount current ground speed is below min ground speed.  Centimeters per second
     int32_t groundspeed_undershoot;
     bool groundspeed_undershoot_is_valid;
-
-    // Difference between current altitude and desired altitude.  Centimeters
-    int32_t altitude_error_cm;
+    float last_groundspeed_undershoot_offset;
 
     // speed scaler for control surfaces, updated at 10Hz
     float surface_speed_scaler = 1.0;
@@ -425,6 +456,10 @@ private:
         uint32_t accel_event_ms;
         uint32_t start_time_ms;
         bool waiting_for_rudder_neutral;
+        float throttle_lim_max;
+        float throttle_lim_min;
+        uint32_t throttle_max_timer_ms;
+        uint32_t level_off_start_time_ms;
     } takeoff_state;
 
     // ground steering controller state
@@ -484,10 +519,6 @@ private:
         // Minimum pitch to hold during takeoff command execution.  Hundredths of a degree
         int16_t takeoff_pitch_cd;
 
-        // used to 'wiggle' servos in idle mode to prevent them freezing
-        // at high altitudes
-        uint8_t idle_wiggle_stage;
-
         // Flag for using gps ground course instead of INS yaw.  Set false when takeoff command in process.
         bool takeoff_complete;
 
@@ -509,6 +540,11 @@ private:
         // have we checked for an auto-land?
         bool checked_for_autoland;
 
+        // Altitude threshold to complete a takeoff command in autonomous modes.  Centimeters
+        // are we in idle mode? used for balloon launch to stop servo
+        // movement until altitude is reached
+        bool idle_mode;
+        
         // are we in VTOL mode in AUTO?
         bool vtol_mode;
 
@@ -520,6 +556,9 @@ private:
 
         // last home altitude for detecting changes
         int32_t last_home_alt_cm;
+
+        // have we finished the takeoff ratation (when it applies)?
+        bool rotation_complete;
     } auto_state;
 
 #if AP_SCRIPTING_ENABLED
@@ -548,18 +587,17 @@ private:
         float forced_throttle;
         uint32_t last_forced_throttle_ms;
 
-#if OFFBOARD_GUIDED == ENABLED
+#if AP_PLANE_OFFBOARD_GUIDED_SLEW_ENABLED
         // airspeed adjustments
         float target_airspeed_cm = -1;  // don't default to zero here, as zero is a valid speed.
         float target_airspeed_accel;
         uint32_t target_airspeed_time_ms;
 
         // altitude adjustments
-        float target_alt = -1;   // don't default to zero here, as zero is a valid alt.
-        uint32_t last_target_alt = 0;
-        float target_alt_accel;
+        Location target_location;
+        float target_alt_rate;
         uint32_t target_alt_time_ms = 0;
-        uint8_t target_alt_frame = 0;
+        uint8_t target_mav_frame = -1;
 
         // heading track
         float target_heading = -4; // don't default to zero or -1 here, as both are valid headings in radians
@@ -567,7 +605,7 @@ private:
         uint32_t target_heading_time_ms;
         guided_heading_type_t target_heading_type;
         bool target_heading_limit;
-#endif // OFFBOARD_GUIDED == ENABLED
+#endif // AP_PLANE_OFFBOARD_GUIDED_SLEW_ENABLED
     } guided_state;
 
 #if AP_LANDINGGEAR_ENABLED
@@ -644,7 +682,7 @@ private:
             FUNCTOR_BIND_MEMBER(&Plane::exit_mission_callback, void)};
 
 
-#if PARACHUTE == ENABLED
+#if HAL_PARACHUTE_ENABLED
     AP_Parachute parachute;
 #endif
 
@@ -850,20 +888,28 @@ private:
     static const TerrainLookupTable Terrain_lookup[];
 #endif
 
+#if AP_QUICKTUNE_ENABLED
+    void update_quicktune(void);
+#endif
+
     // Attitude.cpp
     void adjust_nav_pitch_throttle(void);
     void update_load_factor(void);
     void adjust_altitude_target();
     void setup_glide_slope(void);
     int32_t get_RTL_altitude_cm() const;
-    float relative_ground_altitude(bool use_rangefinder_if_available);
-    float relative_ground_altitude(bool use_rangefinder_if_available, bool use_terrain_if_available);
+    bool rangefinder_use(enum RangeFinderUse rangefinder_use) const;
+    float relative_ground_altitude(enum RangeFinderUse rangefinder_use);
+    float relative_ground_altitude(enum RangeFinderUse rangefinder_use, bool use_terrain_if_available);
     void set_target_altitude_current(void);
     void set_target_altitude_current_adjusted(void);
     void set_target_altitude_location(const Location &loc);
     int32_t relative_target_altitude_cm(void);
     void change_target_altitude(int32_t change_cm);
     void set_target_altitude_proportion(const Location &loc, float proportion);
+#if AP_TERRAIN_AVAILABLE
+    bool set_target_altitude_proportion_terrain(void);
+#endif
     void constrain_target_altitude_location(const Location &loc1, const Location &loc2);
     int32_t calc_altitude_error_cm(void);
     void check_fbwb_altitude(void);
@@ -876,9 +922,12 @@ private:
     float mission_alt_offset(void);
     float height_above_target(void);
     float lookahead_adjustment(void);
+    void fix_terrain_WP(Location &loc, uint32_t linenum);
+#if AP_RANGEFINDER_ENABLED
     float rangefinder_correction(void);
     void rangefinder_height_update(void);
     void rangefinder_terrain_correction(float &height);
+#endif
     void stabilize();
     void calc_throttle();
     void calc_nav_roll();
@@ -896,9 +945,16 @@ private:
     int16_t calc_nav_yaw_course(void);
     int16_t calc_nav_yaw_ground(void);
 
-    // Log.cpp
-    uint32_t last_log_fast_ms;
+#if HAL_LOGGING_ENABLED
 
+    // methods for AP_Vehicle:
+    const AP_Int32 &get_log_bitmask() override { return g.log_bitmask; }
+    const struct LogStructure *get_log_structures() const override {
+        return log_structure;
+    }
+    uint8_t get_num_log_structures() const override;
+
+    // Log.cpp
     void Log_Write_FullRate(void);
     void Log_Write_Attitude(void);
     void Log_Write_Control_Tuning();
@@ -909,7 +965,7 @@ private:
     void Log_Write_RC(void);
     void Log_Write_Vehicle_Startup_Messages();
     void Log_Write_AETR();
-    void log_init();
+#endif
 
     // Parameters.cpp
     void load_parameters(void) override;
@@ -943,6 +999,7 @@ private:
     void do_loiter_turns(const AP_Mission::Mission_Command& cmd);
     void do_loiter_time(const AP_Mission::Mission_Command& cmd);
     void do_continue_and_change_alt(const AP_Mission::Mission_Command& cmd);
+    void do_altitude_wait(const AP_Mission::Mission_Command& cmd);
     void do_loiter_to_alt(const AP_Mission::Mission_Command& cmd);
     void do_vtol_takeoff(const AP_Mission::Mission_Command& cmd);
     void do_vtol_land(const AP_Mission::Mission_Command& cmd);
@@ -983,6 +1040,8 @@ private:
 
     // set home location and store it persistently:
     bool set_home_persistently(const Location &loc) WARN_IF_UNUSED;
+    bool set_home_to_current_location(bool lock) override WARN_IF_UNUSED;
+    bool set_home(const Location& loc, bool lock) override WARN_IF_UNUSED;
 
     // control_modes.cpp
     void read_control_switch();
@@ -1075,18 +1134,19 @@ private:
     bool rc_throttle_value_ok(void) const;
     bool rc_failsafe_active(void) const;
 
+#if AP_RANGEFINDER_ENABLED
     // sensors.cpp
     void read_rangefinder(void);
+#endif
 
     // system.cpp
     void init_ardupilot() override;
-    void startup_ground(void);
     bool set_mode(Mode& new_mode, const ModeReason reason);
     bool set_mode(const uint8_t mode, const ModeReason reason) override;
     bool set_mode_by_number(const Mode::Number new_mode_number, const ModeReason reason);
     void check_long_failsafe();
     void check_short_failsafe();
-    void startup_INS_ground(void);
+    void startup_INS(void);
     bool should_log(uint32_t mask);
     int8_t throttle_percentage(void);
     void notify_mode(const Mode& mode);
@@ -1096,22 +1156,23 @@ private:
     bool auto_takeoff_check(void);
     void takeoff_calc_roll(void);
     void takeoff_calc_pitch(void);
+    void takeoff_calc_throttle();
     int8_t takeoff_tail_hold(void);
     int16_t get_takeoff_pitch_min_cd(void);
     void landing_gear_update(void);
+    bool check_takeoff_timeout(void);
+    bool check_takeoff_timeout_level_off(void);
 
     // avoidance_adsb.cpp
     void avoidance_adsb_update(void);
 
     // servos.cpp
-    void set_servos_idle(void);
     void set_servos();
     float apply_throttle_limits(float throttle_in);
     void set_throttle(void);
     void set_takeoff_expected(void);
     void set_servos_old_elevons(void);
     void set_servos_flaps(void);
-    void set_landing_gear(void);
     void dspoiler_update(void);
     void airbrake_update(void);
     void landing_neutral_control_surface_servos(void);
@@ -1136,7 +1197,7 @@ private:
 
     // parachute.cpp
     void parachute_check();
-#if PARACHUTE == ENABLED
+#if HAL_PARACHUTE_ENABLED
     void do_parachute(const AP_Mission::Mission_Command& cmd);
     void parachute_release();
     bool parachute_manual_release();
@@ -1266,6 +1327,11 @@ public:
 
     // allow for landing descent rate to be overridden by a script, may be -ve to climb
     bool set_land_descent_rate(float descent_rate) override;
+
+    // allow scripts to override mission/guided crosstrack behaviour
+    // It's up to the Lua script to ensure the provided location makes sense
+    bool set_crosstrack_start(const Location &new_start_location) override;
+
 #endif // AP_SCRIPTING_ENABLED
 
 };

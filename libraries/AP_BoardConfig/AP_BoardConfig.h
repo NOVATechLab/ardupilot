@@ -5,8 +5,9 @@
 #include <AP_Param/AP_Param.h>
 #include <AP_RTC/AP_RTC.h>
 #include <AC_PID/AC_PI.h>
+#include <AP_Radio/AP_Radio_config.h>
 
-#if HAL_RCINPUT_WITH_AP_RADIO
+#if AP_RADIO_ENABLED
 #include <AP_Radio/AP_Radio.h>
 #endif
 
@@ -238,7 +239,7 @@ private:
         AP_Int16 safety_option;
         AP_Int32 ignore_safety_channels;
 #if CONFIG_HAL_BOARD == HAL_BOARD_CHIBIOS
-        AP_Int8 ser_rtscts[6];
+        AP_Int8 ser_rtscts[9];
         AP_Int8 sbus_out_rate;
 #endif
         AP_Int8 board_type;
@@ -292,7 +293,7 @@ private:
     } heater;
 #endif
 
-#if HAL_RCINPUT_WITH_AP_RADIO
+#if AP_RADIO_ENABLED
     // direct attached radio
     AP_Radio _radio;
 #endif

@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 echo "---------- $0 start ----------"
 set -e
 set -x
@@ -42,7 +42,7 @@ echo "Checking homebrew..."
 $(which -s brew) ||
 {
     echo "installing homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    /usr/bin/env bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 } 
 echo "Homebrew installed"
 
@@ -106,7 +106,7 @@ find /usr/local/bin -lname '*/Library/Frameworks/Python.framework/*' -delete
 
 # brew update randomly failing on CI, so ignore errors:
 brew update
-brew install --force --overwrite gawk curl coreutils wget
+brew install --force --overwrite gawk coreutils wget
 
 PIP=pip
 if maybe_prompt_user "Install python using pyenv [N/y]?" ; then
@@ -120,7 +120,7 @@ if maybe_prompt_user "Install python using pyenv [N/y]?" ; then
 
         pushd $HOME/.pyenv
         git fetch --tags
-        git checkout v2.3.12
+        git checkout v2.6.7
         popd
         exportline="export PYENV_ROOT=\$HOME/.pyenv"
         echo $exportline >> ~/$SHELL_LOGIN
@@ -134,10 +134,10 @@ if maybe_prompt_user "Install python using pyenv [N/y]?" ; then
     }
     echo "pyenv installed"
     {
-        $(pyenv global 3.10.4)
+        $(pyenv global 3.10.18)
     } || {
-        env PYTHON_CONFIGURE_OPTS="--enable-framework" pyenv install 3.10.4
-        pyenv global 3.10.4
+        env PYTHON_CONFIGURE_OPTS="--enable-framework" pyenv install 3.10.18
+        pyenv global 3.10.18
     }
 fi
 

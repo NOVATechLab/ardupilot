@@ -71,7 +71,8 @@ void AP_AHRS::add_trim(float roll_in_radians, float pitch_in_radians, bool save_
 void AP_AHRS::update_orientation()
 {
     const uint32_t now_ms = AP_HAL::millis();
-    if (now_ms - last_orientation_update_ms < 1000) {
+    if (last_orientation_update_ms != 0 &&
+        now_ms - last_orientation_update_ms < 1000) {
         // only update once/second
         return;
     }
@@ -167,7 +168,7 @@ AP_AHRS_View *AP_AHRS::create_view(enum Rotation rotation, float pitch_trim_deg)
         // can only have one
         return nullptr;
     }
-    _view = new AP_AHRS_View(*this, rotation, pitch_trim_deg);
+    _view = NEW_NOTHROW AP_AHRS_View(*this, rotation, pitch_trim_deg);
     return _view;
 }
 
@@ -257,7 +258,7 @@ void AP_AHRS::Log_Write_Home_And_Origin()
         Write_Origin(LogOriginType::ekf_origin, ekf_orig);
     }
 
-    if (home_is_set()) {
+    if (_home_is_set) {
         Write_Origin(LogOriginType::ahrs_home, _home);
     }
 }
@@ -265,7 +266,7 @@ void AP_AHRS::Log_Write_Home_And_Origin()
 
 // get apparent to true airspeed ratio
 float AP_AHRS_Backend::get_EAS2TAS(void) {
-    return AP::baro().get_EAS2TAS();
+    return AP::baro()._get_EAS2TAS();
 }
 
 // return current vibration vector for primary IMU
