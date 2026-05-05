@@ -1,7 +1,10 @@
 
-# bash gets confused if you pass in .sh files from windows
-# This breaks Vagrant for some users.
+# Force LF line endings for all text/script files on Windows
 *.sh text eol=lf
+*.bash text eol=lf
+*.py text eol=lf
+*.pyw text eol=lf
+waf text eol=lf
 
 *.bin -diff
 *.elf -diff
