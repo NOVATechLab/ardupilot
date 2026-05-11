@@ -709,6 +709,10 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // @Path: ../libraries/NOVA_Custom/NovaParameters.cpp
     AP_SUBGROUPINFO(novaParams,   "NOVA_", 58, ParametersG2, NovaParameters),
 
+    // @Group: MEDB_
+    // @Path: ../libraries/MedB_Custom/MedBParameters.cpp
+    AP_SUBGROUPINFO(medbParams,   "MEDB_", 59, ParametersG2, MedBParameters),
+
 
     AP_GROUPEND
 };

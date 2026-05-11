@@ -8,6 +8,7 @@ def build(bld):
         ap_vehicle=vehicle,
         ap_libraries=bld.ap_common_vehicle_libraries() + [
             'NOVA_Custom',
+            'MedB_Custom',
             'APM_Control',
             'AP_Arming',
             'AP_Mount',

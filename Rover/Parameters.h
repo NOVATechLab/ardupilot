@@ -24,6 +24,12 @@
 #include "NOVA_Custom/NovaParameters.h"
 #endif
 
+// MedB changes
+#ifndef MEDB_CUSTOM
+#define MEDB_CUSTOM
+#include "MedB_Custom/MedBParameters.h"
+#endif
+
 
 // Global parameter class.
 //
@@ -455,6 +461,10 @@ public:
 
 #ifdef NOVA_CUSTOM
     NovaParameters novaParams;
+#endif
+
+#ifdef MEDB_CUSTOM
+    MedBParameters medbParams;
 #endif
 
 };

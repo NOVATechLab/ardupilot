@@ -154,4 +154,13 @@ void Rover::radio_failsafe_check(uint16_t pwm)
     }
     AP_Notify::flags.failsafe_radio = failed;
     failsafe_trigger(FAILSAFE_EVENT_THROTTLE, "Radio", failed);
+
+    //-- begin add
+    if (failed && g2.medbParams.m_fs_neutral) {
+        hal.rcout->write(0, 1500);
+        hal.rcout->write(1, 1500);
+        hal.rcout->write(3, 1500);
+        hal.rcout->write(4, 1500);
+    }
+    //-- end add
 }
