@@ -40,6 +40,14 @@ local function relay_on(idx)  relay:on(idx)  end  -- пін HIGH → реле в
 local function relay_off(idx) relay:off(idx) end  -- пін LOW  → реле вимкнено
 
 -- ---------------------------------------------------------------------------
+-- ЛОГУВАННЯ (через GCS) — тільки на переходах стану, не щоциклу
+-- ---------------------------------------------------------------------------
+-- MAV severity:  0=EMERGENCY  4=WARNING  6=INFO  7=DEBUG
+local SEV_INFO = 6
+local SEV_WARN = 4
+local function log(sev, msg) gcs:send_text(sev, "JRVS: " .. msg) end
+
+-- ---------------------------------------------------------------------------
 -- RC CHANNELS  (1-based)
 -- ---------------------------------------------------------------------------
 --  CH1 — chVert  — газ (1500..2000) / гальмо (1000..1400)
@@ -84,6 +92,7 @@ local function update_gear(pwm)
                     (last_gear_pwm >= 1200 and pwm < 1200)
     if crossed then
         nGear = nGear % 3 + 1  -- 1→2→3→1
+        log(SEV_INFO, string.format("Gear -> %d (k=%.2f)", nGear, GEAR_COEFF[nGear]))
     end
     last_gear_pwm = pwm
 end
@@ -101,18 +110,31 @@ local PULSE_HOLD_MS     = 80    -- тривалість фази ГАЛЬМУВ�
 -- ---------------------------------------------------------------------------
 local btr_timer = 0
 local btr_armed = false
+local btr_state = false  -- актуальний логічний стан реле батареї
 
 local function update_battery(v_bt, now)
     if v_bt > 1100 then
         if not btr_armed then
             btr_timer = now
             btr_armed = true
+            log(SEV_INFO, string.format("Battery: arming (hold %dms)", RELAY_HOLD_MS))
         end
         if now - btr_timer >= RELAY_HOLD_MS then
+            if not btr_state then
+                log(SEV_INFO, "Battery relay ON")
+                btr_state = true
+            end
             relay_on(IDX_BTR)
         end
     else
+        if btr_armed then
+            log(SEV_INFO, "Battery: arm canceled")
+        end
         btr_armed = false
+        if btr_state then
+            log(SEV_INFO, "Battery relay OFF")
+            btr_state = false
+        end
         relay_off(IDX_BTR)
     end
 end
@@ -122,18 +144,31 @@ end
 -- ---------------------------------------------------------------------------
 local slc_timer = 0
 local slc_armed = false
+local slc_state = false  -- актуальний логічний стан реле селектора
 
 local function update_selector(v_sl, now)
     if v_sl > 1100 then
         if not slc_armed then
             slc_timer = now
             slc_armed = true
+            log(SEV_INFO, string.format("Selector: arming (hold %dms)", RELAY_HOLD_MS))
         end
         if now - slc_timer >= RELAY_HOLD_MS then
+            if not slc_state then
+                log(SEV_INFO, "Selector relay ON (reverse)")
+                slc_state = true
+            end
             relay_on(IDX_SLC)
         end
     else
+        if slc_armed then
+            log(SEV_INFO, "Selector: arm canceled")
+        end
         slc_armed = false
+        if slc_state then
+            log(SEV_INFO, "Selector relay OFF (forward)")
+            slc_state = false
+        end
         relay_off(IDX_SLC)
     end
 end
@@ -179,6 +214,8 @@ local function do_brake(left, right, now)
         brake_releasing = false
         brake_left_on  = left
         brake_right_on = right
+        log(SEV_INFO, string.format("Brake config: L=%s R=%s (full %dms then pulse)",
+            tostring(left), tostring(right), BRAKE_HOLD_MS))
     end
 
     -- Насос і клапани тиску
@@ -210,34 +247,43 @@ end
 --   RRV ON = клапан скидання → тиск з циліндра → кузов ОПУСКАЄТЬСЯ
 -- Безпека: логіка кузова активна тільки при нульовому газі (dgstk == 0).
 -- ---------------------------------------------------------------------------
+local body_state = "STOP"  -- LOCKED|UP|DOWN|STOP
+
 local function update_body(v_bd, dgstk)
+    local new_state
     if dgstk ~= 0 then
         -- рух або гальмо — кузов не чіпаємо
+        new_state = "LOCKED"
         relay_off(IDX_SSVL)
         relay_off(IDX_PUMP)
         relay_off(IDX_LRV)
         relay_off(IDX_RRV)
-        return
-    end
-
-    if v_bd > 1600 then
+    elseif v_bd > 1600 then
         -- Підняти кузов
+        new_state = "UP"
         relay_on(IDX_SSVL)   -- перемикаємо гідравліку на кузов
         relay_on(IDX_PUMP)   -- насос ON
         relay_on(IDX_LRV)    -- клапан подачі → тиск у циліндр
         relay_off(IDX_RRV)   -- клапан скидання закрито
     elseif v_bd < 1400 then
         -- Опустити кузов
+        new_state = "DOWN"
         relay_on(IDX_SSVL)   -- перемикаємо гідравліку на кузов
         relay_on(IDX_PUMP)   -- насос ON
         relay_off(IDX_LRV)   -- клапан подачі закрито
         relay_on(IDX_RRV)    -- клапан скидання → тиск виходить → кузов вниз
     else
         -- Центр — зупинити, кузов тримається на місці
+        new_state = "STOP"
         relay_off(IDX_SSVL)
         relay_off(IDX_PUMP)
         relay_off(IDX_LRV)
         relay_off(IDX_RRV)
+    end
+
+    if new_state ~= body_state then
+        log(SEV_INFO, "Body: " .. new_state)
+        body_state = new_state
     end
 end
 
@@ -250,12 +296,15 @@ local function un_brake()
         brake_right_on  = false
         brake_releasing = false
         brake_pulse_ms  = 0
+        log(SEV_INFO, "Brake released")
     end
 end
 
 -- ---------------------------------------------------------------------------
 -- ГОЛОВНИЙ ЦИКЛ
 -- ---------------------------------------------------------------------------
+local prev_mode = "INIT"  -- GAS|BRAKE|TURN_LEFT|TURN_RIGHT|IDLE
+
 local function update()
     local now  = millis()
 
@@ -324,6 +373,24 @@ local function update()
     -- Кузов самоскида
     update_body(v_bd, dgstk)
 
+    -- Лог поточного режиму руху (на переходах)
+    local mode
+    if dgstk == 1 then
+        mode = "GAS"
+    elseif dgstk == 2 then
+        mode = "BRAKE"
+    elseif v2 < 1380 and v2 >= 1000 then
+        mode = "TURN_LEFT"
+    elseif v2 > 1600 and v2 < 2000 then
+        mode = "TURN_RIGHT"
+    else
+        mode = "IDLE"
+    end
+    if mode ~= prev_mode then
+        log(SEV_INFO, string.format("Mode: %s (v1=%d v2=%d gear=%d)", mode, v1, v2, nGear))
+        prev_mode = mode
+    end
+
     return update, 20  -- наступний виклик через 20 мс (50 Гц)
 end
 
@@ -333,7 +400,8 @@ end
 local function init()
     for i = 0, 7 do relay_off(i) end
     set_throttle(1000)
-    gcs:send_text(6, "rover_control.lua: started, gear=" .. nGear)
+    log(SEV_INFO, string.format("JRVS_MamontUGV started, gear=%d k=%.2f",
+        nGear, GEAR_COEFF[nGear]))
     return update, 500  -- перший цикл через 500 мс після старту
 end
 
