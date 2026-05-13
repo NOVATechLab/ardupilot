@@ -64,14 +64,12 @@ local CH_SLC  = 5
 local CH_BODY = 6
 
 -- ---------------------------------------------------------------------------
--- ПЕРЕДАЧІ
+-- ПЕРЕДАЧІ  (незалежні від логіки газу — лише жорсткий ліміт PWM)
 -- ---------------------------------------------------------------------------
--- Коефіцієнт обмежує максимальну швидкість (0..1 → 1000..2000 мкс на виході)
--- Передача 1 (понижена): kGear = 0.20  → макс 1200 мкс
--- Передача 2 (середня):  kGear = 0.35  → макс 1350 мкс
--- Передача 3 (підвищена):kGear = 0.60  → макс 1600 мкс
-local GEAR_COEFF = { 0.20, 0.35, 0.60 }
-local nGear      = 1
+-- Передача 1: макс 1200 мкс  |  Передача 2: макс 1350 мкс  |  Передача 3: макс 1600 мкс
+local GEAR_MAX_PWM = { 1200, 1350, 1600 }
+local nGear        = 1
+local gear_max     = GEAR_MAX_PWM[1]
 
 local function update_gear(pwm)
     local new_gear
@@ -83,8 +81,9 @@ local function update_gear(pwm)
         new_gear = 3
     end
     if new_gear ~= nGear then
-        nGear = new_gear
-        log(SEV_INFO, string.format("Gear -> %d (k=%.2f)", nGear, GEAR_COEFF[nGear]))
+        nGear     = new_gear
+        gear_max  = GEAR_MAX_PWM[nGear]
+        log(SEV_INFO, string.format("Gear -> %d (max_pwm=%d)", nGear, gear_max))
     end
 end
 
@@ -309,7 +308,6 @@ local function update()
 
     -- Оновлення передачі
     update_gear(v_gr)
-    local k = GEAR_COEFF[nGear]
 
     -- Реле батареї та селектора
     update_battery(v_bt, now)
@@ -323,7 +321,7 @@ local function update()
     if v1 > 1500 and v1 < 2000 then
         -- Джойстик вперед: газ
         dgstk = 1
-        local gas_pwm = math.floor(1000 + (v1 - 1500) / 500.0 * k * 1000)
+        local gas_pwm = math.min(math.floor(1000 + (v1 - 1500) / 500.0 * 1000), gear_max)
         SRV_Channels:set_output_pwm(70, gas_pwm)
         un_brake()
 
@@ -350,13 +348,13 @@ local function update()
         if v2 < 1380 and v2 >= 1000 then
             -- Поворот вліво: гальмуємо ліву сторону, газ на праву
             do_brake(true, false, now)
-            local gas_pwm = math.floor(1000 + (1485 - v2) / 885.0 * k * 1000)
+            local gas_pwm = math.min(math.floor(1000 + (1485 - v2) / 885.0 * 1000), gear_max)
             SRV_Channels:set_output_pwm(70, gas_pwm)
 
         elseif v2 > 1600 and v2 < 2000 then
             -- Поворот вправо: гальмуємо праву сторону, газ на ліву
             do_brake(false, true, now)
-            local gas_pwm = math.floor(1000 + (v2 - 1500) / 500.0 * k * 1000)
+            local gas_pwm = math.min(math.floor(1000 + (v2 - 1500) / 500.0 * 1000), gear_max)
             SRV_Channels:set_output_pwm(70, gas_pwm)
         end
     end
