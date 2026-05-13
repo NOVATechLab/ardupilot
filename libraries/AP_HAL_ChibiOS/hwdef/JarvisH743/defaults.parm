@@ -1,8 +1,11 @@
 SCR_ENABLE 1
 
 # Rover control via Lua scripting
-# SERVO1 (PA0) used as throttle output to motor controller (1000-2000us PWM)
-SERVO1_FUNCTION 94
+# SERVO1 (PA0) throttle output, MOT_PWM_TYPE=4 (Brushed Bi-Polar), MOT_PWM_FREQ=1000
+SERVO1_FUNCTION 70
+SERVO1_MIN 1000
+SERVO1_MAX 2000
+SERVO1_TRIM 1000
 
 # Enable all 7 relay channels
 RELAY1_FUNCTION 1

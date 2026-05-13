@@ -64,37 +64,28 @@ local CH_SLC  = 5
 local CH_BODY = 6
 
 -- ---------------------------------------------------------------------------
--- SERVO OUTPUT
--- ---------------------------------------------------------------------------
--- SERVO1 (PA0) налаштовано як k_scripting1 (function 94) у defaults.parm
--- Вихід 1000 мкс = мінімум, 2000 мкс = максимум
-local SERVO_FUNC = 94  -- k_scripting1
-
-local function set_throttle(pwm_us)
-    -- pwm_us: 1000..2000
-    SRV_Channels:set_output_pwm(SERVO_FUNC, math.max(1000, math.min(2000, pwm_us)))
-end
-
--- ---------------------------------------------------------------------------
 -- ПЕРЕДАЧІ
 -- ---------------------------------------------------------------------------
 -- Коефіцієнт обмежує максимальну швидкість (0..1 → 1000..2000 мкс на виході)
 -- Передача 1 (понижена): kGear = 0.20  → макс 1200 мкс
 -- Передача 2 (середня):  kGear = 0.35  → макс 1350 мкс
 -- Передача 3 (підвищена):kGear = 0.60  → макс 1600 мкс
-local GEAR_COEFF    = { 0.20, 0.35, 0.60 }
-local nGear         = 1
-local last_gear_pwm = 0
+local GEAR_COEFF = { 0.20, 0.35, 0.60 }
+local nGear      = 1
 
 local function update_gear(pwm)
-    -- Кожне перетинання порогу 1200 мкс (в будь-який бік) підвищує передачу
-    local crossed = (last_gear_pwm < 1200 and pwm >= 1200) or
-                    (last_gear_pwm >= 1200 and pwm < 1200)
-    if crossed then
-        nGear = nGear % 3 + 1  -- 1→2→3→1
+    local new_gear
+    if pwm < 1200 then
+        new_gear = 1
+    elseif pwm < 1700 then
+        new_gear = 2
+    else
+        new_gear = 3
+    end
+    if new_gear ~= nGear then
+        nGear = new_gear
         log(SEV_INFO, string.format("Gear -> %d (k=%.2f)", nGear, GEAR_COEFF[nGear]))
     end
-    last_gear_pwm = pwm
 end
 
 -- ---------------------------------------------------------------------------
@@ -333,13 +324,13 @@ local function update()
         -- Джойстик вперед: газ
         dgstk = 1
         local gas_pwm = math.floor(1000 + (v1 - 1500) / 500.0 * k * 1000)
-        set_throttle(gas_pwm)
+        SRV_Channels:set_output_pwm(70, gas_pwm)
         un_brake()
 
     elseif v1 < 1400 and v1 >= 1000 then
         -- Джойстик назад: гальмо
         dgstk = 2
-        set_throttle(1000)
+        SRV_Channels:set_output_pwm(70, 1000)
         do_brake(true, true, now)
 
     else
@@ -347,7 +338,7 @@ local function update()
         dgstk = 0
         if v2 > 1400 and v2 < 1600 then
             -- Кермо теж в центрі — вільний хід
-            set_throttle(1000)
+            SRV_Channels:set_output_pwm(70, 1000)
             un_brake()
         end
     end
@@ -360,13 +351,13 @@ local function update()
             -- Поворот вліво: гальмуємо ліву сторону, газ на праву
             do_brake(true, false, now)
             local gas_pwm = math.floor(1000 + (1485 - v2) / 885.0 * k * 1000)
-            set_throttle(gas_pwm)
+            SRV_Channels:set_output_pwm(70, gas_pwm)
 
         elseif v2 > 1600 and v2 < 2000 then
             -- Поворот вправо: гальмуємо праву сторону, газ на ліву
             do_brake(false, true, now)
             local gas_pwm = math.floor(1000 + (v2 - 1500) / 500.0 * k * 1000)
-            set_throttle(gas_pwm)
+            SRV_Channels:set_output_pwm(70, gas_pwm)
         end
     end
 
@@ -399,7 +390,7 @@ end
 -- ---------------------------------------------------------------------------
 local function init()
     for i = 0, 7 do relay_off(i) end
-    set_throttle(1000)
+    SRV_Channels:set_output_pwm(70, 1000)
     log(SEV_INFO, string.format("JRVS_MamontUGV started, gear=%d k=%.2f",
         nGear, GEAR_COEFF[nGear]))
     return update, 500  -- перший цикл через 500 мс після старту
