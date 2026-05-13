@@ -53,10 +53,10 @@ local CH_SLC  = 5
 local CH_BODY = 6
 
 -- ---------------------------------------------------------------------------
--- GEARS  →  THR_MAX
+-- GEARS  →  SERVO1_MAX
 -- ---------------------------------------------------------------------------
-local GEAR_THR_MAX = { 20, 35, 60 }  -- % → макс 1200 / 1350 / 1600 мкс
-local nGear        = 1
+local GEAR_SERVO_MAX = { 1200, 1350, 1600 }
+local nGear          = 1
 
 local function update_gear(pwm)
     local new_gear
@@ -69,8 +69,8 @@ local function update_gear(pwm)
     end
     if new_gear ~= nGear then
         nGear = new_gear
-        param:set('THR_MAX', GEAR_THR_MAX[nGear])
-        log(SEV_INFO, string.format("Gear %d  THR_MAX=%d%%", nGear, GEAR_THR_MAX[nGear]))
+        param:set('SERVO1_MAX', GEAR_SERVO_MAX[nGear])
+        log(SEV_INFO, string.format("Gear %d  SERVO1_MAX=%d", nGear, GEAR_SERVO_MAX[nGear]))
     end
 end
 
@@ -233,7 +233,6 @@ end
 -- MAIN LOOP
 -- ---------------------------------------------------------------------------
 local prev_mode = "INIT"
-local thr_zeroed = false  -- tracks if we set THR_MAX=0 for full brake
 
 local function update()
     local now  = millis()
@@ -249,36 +248,22 @@ local function update()
     update_selector(v_sl, now)
 
     -- -----------------------------------------------------------------------
-    -- BRAKE / STEER
+    -- THROTTLE / BRAKE / STEER
     -- -----------------------------------------------------------------------
     local mode
 
     if v1 < 1400 then
-        -- Джойстик назад: повне гальмування, мотор стоп
-        if not thr_zeroed then
-            param:set('THR_MAX', 0)
-            thr_zeroed = true
-        end
         do_brake(true, true, now)
         mode = "BRAKE"
-
+    elseif v2 < 1380 then
+        do_brake(true, false, now)
+        mode = "TURN_L"
+    elseif v2 > 1620 then
+        do_brake(false, true, now)
+        mode = "TURN_R"
     else
-        -- Відновити ліміт після гальма
-        if thr_zeroed then
-            param:set('THR_MAX', GEAR_THR_MAX[nGear])
-            thr_zeroed = false
-        end
-
-        if v2 < 1380 then
-            do_brake(true, false, now)   -- поворот вліво
-            mode = "TURN_L"
-        elseif v2 > 1620 then
-            do_brake(false, true, now)   -- поворот вправо
-            mode = "TURN_R"
-        else
-            un_brake()
-            mode = v1 > 1500 and "GAS" or "IDLE"
-        end
+        un_brake()
+        mode = v1 > 1500 and "GAS" or "IDLE"
     end
 
     -- Body: дозволено тільки на повному холостому ходу
@@ -298,9 +283,9 @@ end
 -- ---------------------------------------------------------------------------
 local function init()
     for i = 0, 7 do relay_off(i) end
-    param:set('THR_MAX', GEAR_THR_MAX[nGear])
-    log(SEV_INFO, string.format("JRVS_MamontUGV v2  gear=%d  THR_MAX=%d%%",
-        nGear, GEAR_THR_MAX[nGear]))
+    param:set('SERVO1_MAX', GEAR_SERVO_MAX[nGear])
+    log(SEV_INFO, string.format("JRVS_MamontUGV v2  gear=%d  SERVO1_MAX=%d",
+        nGear, GEAR_SERVO_MAX[nGear]))
     return update, 500
 end
 
