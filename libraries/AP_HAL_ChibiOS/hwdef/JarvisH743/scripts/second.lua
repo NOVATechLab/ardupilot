@@ -1,12 +1,11 @@
-local last_time = 0
+local announced = false
 
 function update()
-    local now = millis()
-    if now - last_time >= 30000 then -- 30000 ms = 30 second
-        gcs:send_text(0, "Hello from Lua script every 30 second")
-        last_time = now
+    if not announced then
+        gcs:send_text(0, "JarvisH743 custom board, provded and developed by TechUnity.")
+        announced = true
     end
-    return update, 1000  -- schedule again in 100 ms
+    return update, 1000
 end
 
 return update()
