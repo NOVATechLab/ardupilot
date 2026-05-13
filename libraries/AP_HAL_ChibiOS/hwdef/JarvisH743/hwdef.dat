@@ -1,4 +1,4 @@
-# hw definition file for processing by chibios_pins.py
+﻿# hw definition file for processing by chibios_pins.py
 # for J.A.R.W.I.S. H743
 
 # MCU class and specific type
@@ -127,6 +127,7 @@ PB2  PINIO3 OUTPUT GPIO(73) LOW
 PE7  PINIO4 OUTPUT GPIO(74) LOW
 PE8  PINIO5 OUTPUT GPIO(75) LOW
 
+define AP_RELAY_NUM_RELAYS 8
 define RELAY1_PIN_DEFAULT 75
 define RELAY2_PIN_DEFAULT 74
 define RELAY3_PIN_DEFAULT 73
