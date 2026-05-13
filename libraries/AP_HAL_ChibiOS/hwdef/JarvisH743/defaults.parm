@@ -1,11 +1,18 @@
 SCR_ENABLE 1
 
+# RC channel mapping: CH1=throttle (vertical stick), CH2=steering (horizontal stick)
+# Default is RCMAP_THROTTLE=3, RCMAP_ROLL=1 — must override for spring-centered joystick
+RCMAP_THROTTLE 1
+RCMAP_ROLL 2
+
 # Rover control via Lua scripting
 # SERVO1 (PA0) throttle output, MOT_PWM_TYPE=4 (Brushed Bi-Polar), MOT_PWM_FREQ=1000
 SERVO1_FUNCTION 70
-SERVO1_MIN 1000
+SERVO1_MIN 800
 SERVO1_MAX 2000
 SERVO1_TRIM 1000
+# SERVO2 dummy steering — satisfies prearm check, not physically connected
+SERVO2_FUNCTION 26
 
 # Enable all 7 relay channels
 RELAY1_FUNCTION 1

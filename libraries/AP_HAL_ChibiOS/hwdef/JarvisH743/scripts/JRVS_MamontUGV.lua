@@ -263,11 +263,11 @@ local function update()
         mode = "TURN_R"
     else
         un_brake()
-        mode = v1 > 1500 and "GAS" or "IDLE"
+        mode = v1 > 1510 and "GAS" or "IDLE"
     end
 
     -- Body: дозволено тільки на повному холостому ходу
-    local motor_idle = (v1 >= 1400 and v1 <= 1500)
+    local motor_idle = (v1 >= 1400 and v1 <= 1510)
     update_body(v_bd, motor_idle)
 
     if mode ~= prev_mode then
