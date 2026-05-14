@@ -191,6 +191,17 @@ local function un_brake()
     end
 end
 
+-- Simple relay toggle for steering turns (no pulse timing)
+local function do_turn_brake(left, right)
+    relay_on(IDX_PUMP)
+    if left  then relay_on(IDX_LPV);  relay_off(IDX_LRV)
+    else          relay_off(IDX_LPV); relay_on(IDX_LRV) end
+    if right then relay_on(IDX_RPV);  relay_off(IDX_RRV)
+    else          relay_off(IDX_RPV); relay_on(IDX_RRV) end
+    brake_left_on  = left
+    brake_right_on = right
+end
+
 -- ---------------------------------------------------------------------------
 -- BODY (dump truck)
 -- ---------------------------------------------------------------------------
@@ -253,17 +264,21 @@ local function update()
     local mode
 
     if v1 < 1400 then
+        -- emergency brake: pulse logic to manage hydraulic pressure
         do_brake(true, true, now)
         mode = "BRAKE"
-    elseif v2 < 1380 then
-        do_brake(true, false, now)
-        mode = "TURN_L"
-    elseif v2 > 1620 then
-        do_brake(false, true, now)
-        mode = "TURN_R"
     else
-        un_brake()
-        mode = v1 > 1510 and "GAS" or "IDLE"
+        -- steering: CH2 independently toggles one-side brake
+        if v2 < 1380 then
+            do_turn_brake(true, false)
+            mode = "TURN_L"
+        elseif v2 > 1620 then
+            do_turn_brake(false, true)
+            mode = "TURN_R"
+        else
+            un_brake()
+            mode = v1 > 1510 and "GAS" or "IDLE"
+        end
     end
 
     -- Body: дозволено тільки на повному холостому ходу
