@@ -43,6 +43,32 @@ local SEV_WARN = 4
 local function log(sev, msg) gcs:send_text(sev, "JRVS: " .. msg) end
 
 -- ---------------------------------------------------------------------------
+-- CUSTOM PARAMETERS
+-- ---------------------------------------------------------------------------
+local PARAM_TABLE_KEY = 72
+assert(param:add_table(PARAM_TABLE_KEY, "JRVS_", 10), "JRVS: param table failed")
+
+assert(param:add_param(PARAM_TABLE_KEY, 1, 'G1_SVO',   1200))
+assert(param:add_param(PARAM_TABLE_KEY, 2, 'G2_SVO',   1350))
+assert(param:add_param(PARAM_TABLE_KEY, 3, 'G3_SVO',   1600))
+assert(param:add_param(PARAM_TABLE_KEY, 4, 'G1_THR',   20))
+assert(param:add_param(PARAM_TABLE_KEY, 5, 'G2_THR',   35))
+assert(param:add_param(PARAM_TABLE_KEY, 6, 'G3_THR',   60))
+assert(param:add_param(PARAM_TABLE_KEY, 7, 'BRK_HOLD', 350))
+assert(param:add_param(PARAM_TABLE_KEY, 8, 'BRK_REL',  400))
+assert(param:add_param(PARAM_TABLE_KEY, 9, 'BRK_PLS',  80))
+
+local p_g1_svo   = Parameter('JRVS_G1_SVO')
+local p_g2_svo   = Parameter('JRVS_G2_SVO')
+local p_g3_svo   = Parameter('JRVS_G3_SVO')
+local p_g1_thr   = Parameter('JRVS_G1_THR')
+local p_g2_thr   = Parameter('JRVS_G2_THR')
+local p_g3_thr   = Parameter('JRVS_G3_THR')
+local p_brk_hold = Parameter('JRVS_BRK_HOLD')
+local p_brk_rel  = Parameter('JRVS_BRK_REL')
+local p_brk_pls  = Parameter('JRVS_BRK_PLS')
+
+-- ---------------------------------------------------------------------------
 -- RC CHANNELS
 -- ---------------------------------------------------------------------------
 local CH_VERT = 1
@@ -55,9 +81,9 @@ local CH_BODY = 6
 -- ---------------------------------------------------------------------------
 -- GEARS  →  SERVO1_MAX
 -- ---------------------------------------------------------------------------
-local GEAR_SERVO_MAX = { 1200, 1350, 1600 }
-local GEAR_THR_MAX   = { 20,   35,   60   }
-local nGear          = 1
+local GEAR_SVO = { p_g1_svo, p_g2_svo, p_g3_svo }
+local GEAR_THR = { p_g1_thr, p_g2_thr, p_g3_thr }
+local nGear    = 1
 
 local function update_gear(pwm)
     local new_gear
@@ -70,10 +96,11 @@ local function update_gear(pwm)
     end
     if new_gear ~= nGear then
         nGear = new_gear
-        param:set('SERVO1_MAX',   GEAR_SERVO_MAX[nGear])
-        param:set('MOT_THR_MAX',  GEAR_THR_MAX[nGear])
-        log(SEV_INFO, string.format("Gear %d  SERVO1_MAX=%d  MOT_THR_MAX=%d",
-            nGear, GEAR_SERVO_MAX[nGear], GEAR_THR_MAX[nGear]))
+        local svo = GEAR_SVO[nGear]:get()
+        local thr = GEAR_THR[nGear]:get()
+        param:set('SERVO1_MAX',  svo)
+        param:set('MOT_THR_MAX', thr)
+        log(SEV_INFO, string.format("Gear %d  SERVO1_MAX=%d  MOT_THR_MAX=%d", nGear, svo, thr))
     end
 end
 
@@ -137,9 +164,7 @@ end
 -- ---------------------------------------------------------------------------
 -- HYDRAULIC BRAKES
 -- ---------------------------------------------------------------------------
-local BRAKE_HOLD_MS    = 350  -- повне гальмування перед пульсацією
-local PULSE_RELEASE_MS = 400  -- фаза відпускання
-local PULSE_HOLD_MS    = 80   -- фаза тримання
+-- brake timing comes from JRVS_BRK_HOLD / BRK_REL / BRK_PLS parameters
 
 local brake_left_on   = false
 local brake_right_on  = false
@@ -168,12 +193,12 @@ local function do_brake(left, right, now)
     if left  then relay_on(IDX_LPV) end
     if right then relay_on(IDX_RPV) end
 
-    if now - brake_start_ms < BRAKE_HOLD_MS then
+    if now - brake_start_ms < p_brk_hold:get() then
         _set_release_valves(left, right, false)
         return
     end
 
-    local interval = brake_releasing and PULSE_RELEASE_MS or PULSE_HOLD_MS
+    local interval = brake_releasing and p_brk_rel:get() or p_brk_pls:get()
     if now - brake_pulse_ms >= interval then
         brake_pulse_ms  = now
         brake_releasing = not brake_releasing
@@ -301,10 +326,12 @@ end
 -- ---------------------------------------------------------------------------
 local function init()
     for i = 0, 7 do relay_off(i) end
-    param:set('SERVO1_MAX',  GEAR_SERVO_MAX[nGear])
-    param:set('MOT_THR_MAX', GEAR_THR_MAX[nGear])
+    local svo = GEAR_SVO[nGear]:get()
+    local thr = GEAR_THR[nGear]:get()
+    param:set('SERVO1_MAX',  svo)
+    param:set('MOT_THR_MAX', thr)
     log(SEV_INFO, string.format("JRVS_MamontUGV v2  gear=%d  SERVO1_MAX=%d  MOT_THR_MAX=%d",
-        nGear, GEAR_SERVO_MAX[nGear], GEAR_THR_MAX[nGear]))
+        nGear, svo, thr))
     return update, 500
 end
 
