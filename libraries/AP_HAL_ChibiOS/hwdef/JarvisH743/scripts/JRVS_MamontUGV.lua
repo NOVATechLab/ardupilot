@@ -56,6 +56,7 @@ local CH_BODY = 6
 -- GEARS  →  SERVO1_MAX
 -- ---------------------------------------------------------------------------
 local GEAR_SERVO_MAX = { 1200, 1350, 1600 }
+local GEAR_THR_MAX   = { 20,   35,   60   }
 local nGear          = 1
 
 local function update_gear(pwm)
@@ -69,8 +70,10 @@ local function update_gear(pwm)
     end
     if new_gear ~= nGear then
         nGear = new_gear
-        param:set('SERVO1_MAX', GEAR_SERVO_MAX[nGear])
-        log(SEV_INFO, string.format("Gear %d  SERVO1_MAX=%d", nGear, GEAR_SERVO_MAX[nGear]))
+        param:set('SERVO1_MAX',   GEAR_SERVO_MAX[nGear])
+        param:set('MOT_THR_MAX',  GEAR_THR_MAX[nGear])
+        log(SEV_INFO, string.format("Gear %d  SERVO1_MAX=%d  MOT_THR_MAX=%d",
+            nGear, GEAR_SERVO_MAX[nGear], GEAR_THR_MAX[nGear]))
     end
 end
 
@@ -298,9 +301,10 @@ end
 -- ---------------------------------------------------------------------------
 local function init()
     for i = 0, 7 do relay_off(i) end
-    param:set('SERVO1_MAX', GEAR_SERVO_MAX[nGear])
-    log(SEV_INFO, string.format("JRVS_MamontUGV v2  gear=%d  SERVO1_MAX=%d",
-        nGear, GEAR_SERVO_MAX[nGear]))
+    param:set('SERVO1_MAX',  GEAR_SERVO_MAX[nGear])
+    param:set('MOT_THR_MAX', GEAR_THR_MAX[nGear])
+    log(SEV_INFO, string.format("JRVS_MamontUGV v2  gear=%d  SERVO1_MAX=%d  MOT_THR_MAX=%d",
+        nGear, GEAR_SERVO_MAX[nGear], GEAR_THR_MAX[nGear]))
     return update, 500
 end
 
