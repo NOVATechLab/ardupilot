@@ -281,9 +281,8 @@ local function update()
     local motor_idle = (v1 >= 1400 and v1 <= 1510)
     update_body(v_bd, motor_idle)
 
-    -- Насос: ON при гальмуванні/повороті або підйомі кузова; OFF при газі та нейтралі
-    local body_active = motor_idle and (v_bd > 1700 or v_bd < 1300)
-    if mode == "BRAKE" or mode == "TURN_L" or mode == "TURN_R" or body_active then
+    -- Насос: ON тільки при гальмуванні або повороті; OFF завжди інакше
+    if mode == "BRAKE" or mode == "TURN_L" or mode == "TURN_R" then
         relay_on(IDX_PUMP)
     else
         relay_off(IDX_PUMP)
