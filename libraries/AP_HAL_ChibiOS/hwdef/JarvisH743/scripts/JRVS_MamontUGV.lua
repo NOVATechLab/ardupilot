@@ -207,11 +207,10 @@ local function do_brake(left, right, now)
 end
 
 local function un_brake()
-    -- always open release valves and kill pressure — prevents brake lockup from body mode
-    relay_on(IDX_LRV);  relay_on(IDX_RRV)
-    relay_off(IDX_PUMP)
-    relay_off(IDX_LPV); relay_off(IDX_RPV)
     if brake_left_on or brake_right_on then
+        relay_on(IDX_LRV);  relay_on(IDX_RRV)
+        relay_off(IDX_PUMP)
+        relay_off(IDX_LPV); relay_off(IDX_RPV)
         brake_left_on   = false
         brake_right_on  = false
         brake_releasing = false
@@ -239,9 +238,11 @@ local body_state = "STOP"
 local function update_body(v, motor_idle)
     local new_state
     if not motor_idle then
-        -- motor running: body disabled, but don't touch brake relays (PUMP/LRV/RRV)
         new_state = "LOCKED"
         relay_off(IDX_SSVL)
+        relay_off(IDX_PUMP)
+        relay_off(IDX_LRV)
+        relay_off(IDX_RRV)
     elseif v > 1700 then
         new_state = "UP"
         relay_on(IDX_SSVL)
@@ -255,10 +256,11 @@ local function update_body(v, motor_idle)
         relay_off(IDX_LRV)
         relay_on(IDX_RRV)
     else
-        -- body idle: switch off body hydraulics but don't touch LRV/RRV (brake system owns them)
         new_state = "STOP"
         relay_off(IDX_SSVL)
         relay_off(IDX_PUMP)
+        relay_off(IDX_LRV)
+        relay_off(IDX_RRV)
     end
     if new_state ~= body_state then
         log(SEV_INFO, "Body: " .. new_state)
