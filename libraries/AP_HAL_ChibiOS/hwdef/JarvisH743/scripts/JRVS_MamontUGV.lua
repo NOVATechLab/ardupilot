@@ -164,7 +164,6 @@ local function do_brake(left, right, now)
         brake_right_on  = right
     end
 
-    relay_on(IDX_PUMP)
     if left  then relay_on(IDX_LPV) end
     if right then relay_on(IDX_RPV) end
 
@@ -184,7 +183,6 @@ end
 local function un_brake()
     if brake_left_on or brake_right_on then
         relay_on(IDX_LRV);  relay_on(IDX_RRV)
-        relay_off(IDX_PUMP)
         relay_off(IDX_LPV); relay_off(IDX_RPV)
         brake_left_on   = false
         brake_right_on  = false
@@ -196,7 +194,6 @@ end
 
 -- Simple relay toggle for steering turns (no pulse timing)
 local function do_turn_brake(left, right)
-    relay_on(IDX_PUMP)
     if left  then relay_on(IDX_LPV);  relay_off(IDX_LRV)
     else          relay_off(IDX_LPV); relay_on(IDX_LRV) end
     if right then relay_on(IDX_RPV);  relay_off(IDX_RRV)
@@ -215,25 +212,21 @@ local function update_body(v, motor_idle)
     if not motor_idle then
         new_state = "LOCKED"
         relay_off(IDX_SSVL)
-        relay_off(IDX_PUMP)
         relay_off(IDX_LRV)
         relay_off(IDX_RRV)
     elseif v > 1700 then
         new_state = "UP"
         relay_on(IDX_SSVL)
-        relay_on(IDX_PUMP)
         relay_on(IDX_LRV)
         relay_off(IDX_RRV)
     elseif v < 1300 then
         new_state = "DOWN"
         relay_on(IDX_SSVL)
-        relay_on(IDX_PUMP)
         relay_off(IDX_LRV)
         relay_on(IDX_RRV)
     else
         new_state = "STOP"
         relay_off(IDX_SSVL)
-        relay_off(IDX_PUMP)
         relay_off(IDX_LRV)
         relay_off(IDX_RRV)
     end
@@ -287,6 +280,14 @@ local function update()
     -- Body: дозволено тільки на повному холостому ходу
     local motor_idle = (v1 >= 1400 and v1 <= 1510)
     update_body(v_bd, motor_idle)
+
+    -- Насос: ON при гальмуванні/повороті або підйомі кузова; OFF при газі та нейтралі
+    local body_active = motor_idle and (v_bd > 1700 or v_bd < 1300)
+    if mode == "BRAKE" or mode == "TURN_L" or mode == "TURN_R" or body_active then
+        relay_on(IDX_PUMP)
+    else
+        relay_off(IDX_PUMP)
+    end
 
     if mode ~= prev_mode then
         log(SEV_INFO, string.format("Mode: %s  v1=%d v2=%d G=%d", mode, v1, v2, nGear))
