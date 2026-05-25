@@ -67,11 +67,11 @@ local function try_parse()
 end
 
 function update()
-    local n = port:available()
-    if n and n > 0 then
+    local n = tonumber(port:available()) or 0
+    if n > 0 then
         for _ = 1, n do
-            local b = port:read()
-            if b and b >= 0 then
+            local b = tonumber(port:read()) or -1
+            if b >= 0 then
                 buf[#buf + 1] = b
                 total_rx = total_rx + 1
             end
