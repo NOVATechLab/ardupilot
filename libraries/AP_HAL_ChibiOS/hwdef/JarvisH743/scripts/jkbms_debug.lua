@@ -75,8 +75,8 @@ function update()
 
     -- time-based heartbeat every 5 s regardless of byte count
     local now = millis()
-    if tonumber(now) - last_hb_ms >= HEARTBEAT_MS then
-        last_hb_ms = tonumber(now)
+    if now - last_hb_ms >= HEARTBEAT_MS then
+        last_hb_ms = now
         gcs:send_text(6, string.format(
             "JKBMS DBG: rx=%d bytes  frames=%d  buf=%d",
             total_rx, frames_ok, #buf))
