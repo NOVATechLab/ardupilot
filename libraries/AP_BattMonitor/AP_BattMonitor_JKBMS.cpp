@@ -57,11 +57,15 @@ static const uint8_t REG_BLOCK_STATUS_LO   = 0x00;
 static const uint8_t REG_BLOCK_CELLS_HI    = 0x11;  // Cell voltage registers
 static const uint8_t REG_BLOCK_CELLS_LO    = 0x00;
 
-// Expected data_len for each block
+// Minimum data_len to accept a status frame (frame_type + reg + enough fields)
 static const uint8_t DATA_LEN_STATUS = 45;
-static const uint8_t DATA_LEN_CELLS  = 59;
 
-// Maximum cells in a cell-block frame (28 slots, only active ones are non-zero)
+// Minimum data_len to accept a cell frame: frame_type(1) + reg_block(2) + 1 cell(2) = 5.
+// The BMS sends exactly as many cell slots as it has cells (e.g. 15S → data_len=33),
+// so we cannot require a fixed 59.  Per-cell bounds are enforced during parsing.
+static const uint8_t DATA_LEN_CELLS  = 5;
+
+// Upper bound on cells the BMS may send per frame
 static const uint8_t CELLS_PER_FRAME = 28;
 
 void AP_BattMonitor_JKBMS::init()
@@ -230,19 +234,26 @@ void AP_BattMonitor_JKBMS::_parse_frame(uint16_t frame_total_len)
     if (reg_hi == REG_BLOCK_CELLS_HI && reg_lo == REG_BLOCK_CELLS_LO
             && data_len >= DATA_LEN_CELLS) {
 
-        // Cells start at raw[6]; inactive cells = 0x0000
+        // Cells start at raw[6]; inactive cells = 0x0000.
+        // Stop early if a cell would fall outside the current frame.
         const uint8_t max_cells = MIN((uint8_t)CELLS_PER_FRAME,
                                       (uint8_t)AP_BATT_MONITOR_CELLS_MAX);
+        uint8_t cells_written = 0;
         uint8_t active = 0;
         for (uint8_t i = 0; i < max_cells; i++) {
-            const uint16_t mv = get16u(6 + i * 2);
+            const uint16_t pos = 6U + (uint16_t)i * 2U;
+            if (pos + 1U >= frame_total_len) {
+                break;  // no more cell bytes in this frame
+            }
+            const uint16_t mv = get16u(pos);
             _state.cell_voltages.cells[i] = (mv > 0) ? mv : UINT16_MAX;
             if (mv > 0) {
                 active++;
             }
+            cells_written++;
         }
-        // Invalidate remaining slots
-        for (uint8_t i = max_cells; i < AP_BATT_MONITOR_CELLS_MAX; i++) {
+        // Invalidate slots we did not write
+        for (uint8_t i = cells_written; i < AP_BATT_MONITOR_CELLS_MAX; i++) {
             _state.cell_voltages.cells[i] = UINT16_MAX;
         }
 

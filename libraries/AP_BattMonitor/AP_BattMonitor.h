@@ -24,7 +24,7 @@
 #define AP_BATT_MONITOR_RES_EST_TC_2        0.1f
 
 #if BOARD_FLASH_SIZE > 1024
-#define AP_BATT_MONITOR_CELLS_MAX           14
+#define AP_BATT_MONITOR_CELLS_MAX           16
 #else
 #define AP_BATT_MONITOR_CELLS_MAX           12
 #endif
