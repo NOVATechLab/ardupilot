@@ -19,7 +19,7 @@
  * Protocol (active push, no request needed, no checksum):
  *   Frame: [0xA5][0x5A][data_len][frame_type][data_len bytes payload]
  *   frame_total_bytes = data_len + 3
- *   Baud: 2400 (default)
+ *   Baud: 115200
  *
  * Frame types observed:
  *

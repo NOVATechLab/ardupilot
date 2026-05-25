@@ -610,7 +610,7 @@ void AP_SerialManager::init()
 #endif
                     
                 case SerialProtocol_JKBMS:
-                    state[i].baud.set_default(2);  // 2400 default for JKONG BMS LCD V2.0
+                    state[i].baud.set_default(115);  // 115200 for JKONG BMS LCD V2.0
                     uart->begin(state[i].baudrate());
                     break;
 
