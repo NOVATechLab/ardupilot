@@ -145,17 +145,17 @@ void AP_BattMonitor_JKBMS::_parse_frame(uint16_t frame_total_len)
 {
     const uint8_t *raw     = _rx_buf;
     const uint8_t  data_len = raw[2];
-    const uint8_t  ftype   = raw[3];
+    const uint8_t  frame_type = raw[3];
 
     auto get16u = [&](uint16_t pos) -> uint16_t {
         return ((uint16_t)raw[pos] << 8) | raw[pos + 1];
     };
 
-    if (ftype == 0x80) {
+    if (frame_type == 0x80) {
         return;  // handshake, nothing to do
     }
 
-    if (ftype != 0x82) {
+    if (frame_type != 0x82) {
         return;  // unknown frame type
     }
 
