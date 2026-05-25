@@ -114,7 +114,8 @@ public:
         EFI                            = 27,
         AD7091R5                       = 28,
         Scripting                      = 29,
-        JKBMS                          = 30,
+        // 30 reserved for INA3221 (upstream ArduPilot)
+        JKBMS                          = 31,
     };
 
     FUNCTOR_TYPEDEF(battery_failsafe_handler_fn_t, void, const char *, const int8_t);
