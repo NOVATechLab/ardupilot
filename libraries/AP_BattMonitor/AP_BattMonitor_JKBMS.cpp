@@ -83,7 +83,14 @@ void AP_BattMonitor_JKBMS::read()
         _rx_buf[_rx_len++] = _uart->read();
     }
 
-    _process_bytes();
+    // Process all complete frames in the buffer, not just one.
+    // The BMS sends a burst (heartbeat + status + cells) at ~1 Hz;
+    // draining everything avoids accumulating a multi-frame backlog.
+    uint16_t prev_len;
+    do {
+        prev_len = _rx_len;
+        _process_bytes();
+    } while (_rx_len < prev_len);
 
     const uint32_t now_ms = AP_HAL::millis();
     if (_got_data && (now_ms - _last_response_ms > HEALTHY_TIMEOUT_MS)) {
@@ -175,6 +182,14 @@ void AP_BattMonitor_JKBMS::_parse_frame(uint16_t frame_total_len)
 
         // Total voltage: reg 0x1000, data[6..7], x0.01V
         const float voltage = get16u(6) * 0.01f;
+
+        // Plausibility guard: JK BMS occasionally sends config/threshold frames
+        // that share reg block 0x1000 but contain protection limits, not live
+        // measurements.  Any value outside 1-200 V is physically impossible for
+        // a real battery pack connected to this driver.
+        if (voltage < 1.0f || voltage > 200.0f) {
+            return;
+        }
 
         // Current: reg 0x1001, data[8..9], INT16 x0.1A
         // JK convention: positive=charging; ArduPilot: positive=discharging -> negate
