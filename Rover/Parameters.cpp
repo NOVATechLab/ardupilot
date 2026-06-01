@@ -698,6 +698,7 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // @Units: %/s
     // @Range: 0 500
     // @Increment: 1
+    // @Values: 0:Disabled,50:Gentle,100:Moderate,200:Fast,500:Very Fast
     // @User: Standard
     AP_GROUPINFO("MANUAL_STR_SLEW", 59, ParametersG2, manual_steering_slewrate, 0),
 
