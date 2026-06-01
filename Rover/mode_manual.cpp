@@ -1,14 +1,5 @@
 #include "Rover.h"
 
-bool ModeManual::_enter()
-{
-    // initialize previous steering to current pilot input to avoid slew limiting on mode entry
-    float desired_steering, desired_throttle;
-    get_pilot_desired_steering_and_throttle(desired_steering, desired_throttle);
-    _steering_prev = desired_steering;
-    return true;
-}
-
 void ModeManual::_exit()
 {
     // clear lateral when exiting manual mode
