@@ -82,6 +82,8 @@ public:
         SerialProtocol_IMUOUT = 46,
         // Reserving Serial Protocol 47 for SerialProtocol_IQ
         SerialProtocol_PPP = 48,
+        // 49 = IBUS_Telem, 50 = IOMCU (upstream ArduPilot)
+        SerialProtocol_JKBMS = 51,
         SerialProtocol_NumProtocols                    // must be the last value
     };
 
