@@ -692,6 +692,15 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("MANUAL_STR_EXPO", 55, ParametersG2, manual_steering_expo, 0),
 
+    // @Param: MANUAL_STR_SLEWRATE
+    // @DisplayName: Manual Steering Slew Rate
+    // @Description: Limits how quickly steering can change in MANUAL mode, expressed as a percentage of full deflection per second. Prevents sudden large steering inputs that could damage the vehicle. Set to 0 to disable
+    // @Units: %/s
+    // @Range: 0 500
+    // @Increment: 1
+    // @User: Standard
+    AP_GROUPINFO("MANUAL_STR_SLEWRATE", 59, ParametersG2, manual_steering_slewrate, 0),
+
     // @Param: FS_GCS_TIMEOUT
     // @DisplayName: GCS failsafe timeout
     // @Description: Timeout before triggering the GCS failsafe

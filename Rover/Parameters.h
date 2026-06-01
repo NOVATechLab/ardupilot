@@ -448,6 +448,9 @@ public:
     // manual mode steering expo
     AP_Float manual_steering_expo;
 
+    // manual mode steering slew rate
+    AP_Float manual_steering_slewrate;
+
     // FS GCS timeout trigger time
     AP_Float fs_gcs_timeout;
 

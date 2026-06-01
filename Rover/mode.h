@@ -662,7 +662,12 @@ public:
 
 protected:
 
+    bool _enter() override;
     void _exit() override;
+
+private:
+
+    float _steering_prev;
 };
 
 
