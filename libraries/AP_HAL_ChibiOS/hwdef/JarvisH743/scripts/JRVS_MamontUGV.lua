@@ -7,14 +7,16 @@
 --
 -- CH1  Throttle  : >1510 gas | 1400-1510 idle | <1400 full brake
 -- CH2  Steering  : <1380 left | >1620 right | center free
--- CH3  Battery   : >1700 ON  (hold 1s)
--- CH4  Gear      : <1200 G1 | <1700 G2 | >=1700 G3
+-- CH3  (unused — left free to avoid QGC conflicts)
+-- CH4  (unused — left free to avoid QGC conflicts)
 -- CH5  Selector  : >1700 reverse (hold 1s)
 -- CH6  Mode      : <1200 LAND | <1700 COMBI | >=1700 SWIM
 -- CH7  Body      : >1700 up (RELAY10) | <1300 down (RELAY11) | center off
 -- CH8  Blade     : >1700 up (RELAY12) | <1300 down (RELAY13) | center off
 -- CH9  Light     : >1700 on  (RELAY14) | else off
 -- CH10 Reserve   : >1700 up (RELAY15) | <1300 down (RELAY16) | center off
+-- CH11 Battery   : >1700 ON  (hold 1s)
+-- CH12 Gear      : <1200 G1 | <1700 G2 | >=1700 G3
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -68,14 +70,15 @@ local function log(sev, msg) gcs:send_text(sev, "JRVS: " .. msg) end
 -- ---------------------------------------------------------------------------
 local CH_VERT = 1   -- throttle / brake
 local CH_HORT = 2   -- steering
-local CH_BTR  = 3   -- battery
-local CH_GEAR = 4   -- gear
+-- CH3, CH4 left free (avoid QGC conflicts); battery/gear moved to CH11/CH12
 local CH_SLC  = 5   -- selector fwd/rev
 local CH_MODE = 6   -- drive mode
 local CH_BODY = 7
 local CH_BLADE = 8
 local CH_LIGHT = 9
 local CH_RSV  = 10
+local CH_BTR  = 11  -- battery
+local CH_GEAR = 12  -- gear
 
 -- ---------------------------------------------------------------------------
 -- CUSTOM PARAMETERS  (table key 72, prefix JRVS_)
