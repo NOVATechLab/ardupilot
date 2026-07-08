@@ -356,21 +356,58 @@ end
 -- MAIN LOOP
 -- ---------------------------------------------------------------------------
 local prev_mode = "INIT"
+local rc_ok = true   -- last known RC-input validity
+
+-- Read an RC channel with a SAFE default. rc:get_pwm() returns 0 (not nil) for a
+-- channel with no signal / not assigned on the transmitter, and "0 or default"
+-- keeps that 0 in Lua. Anything below the valid RC range (<900) is treated as
+-- "no channel" and replaced by `default` so unassigned aux channels don't latch.
+local function rc_pwm(chan, default)
+    local v = rc:get_pwm(chan)
+    if not v or v < 900 then return default end
+    return v
+end
 
 local function update()
     local now = millis()
+
+    -- RC FAILSAFE. With no valid RC input rc:get_pwm() returns 0 (not nil), and
+    -- in Lua "0 or 1500" == 0, so throttle reads 0 → land_drive() treats it as
+    -- FULL BRAKE and pulses the pressure valves forever (audible clicking, welds
+    -- contacts). Guard here: while input is invalid, hold every motion output in
+    -- a safe state and skip the drive logic. Battery/selector relays are left as
+    -- they are so an RC glitch does not cut power.
+    if not rc:has_valid_input() then
+        neutralize_throttle()
+        if rc_ok then
+            un_brake(); all_props_off()
+            relay_off(IDX_PUMP)
+            relay_off(IDX_BODY_UP);  relay_off(IDX_BODY_DN)
+            relay_off(IDX_BLADE_UP); relay_off(IDX_BLADE_DN)
+            relay_off(IDX_RSV_UP);   relay_off(IDX_RSV_DN)
+            prev_mode = "INIT"; prev_land_mode = "INIT"
+            log(SEV_INFO, "RC lost - outputs held safe")
+            rc_ok = false
+        end
+        return update, 100
+    end
+    if not rc_ok then
+        log(SEV_INFO, "RC input restored")
+        rc_ok = true
+    end
+
     refresh_cfg()
 
-    local v1  = rc:get_pwm(CH_VERT)  or 1500
-    local v2  = rc:get_pwm(CH_HORT)  or 1500
-    local vbt = rc:get_pwm(CH_BTR)   or 0
-    local vgr = rc:get_pwm(CH_GEAR)  or 1000
-    local vsl = rc:get_pwm(CH_SLC)   or 0
-    local vmd = rc:get_pwm(CH_MODE)  or 1000
-    local v7  = rc:get_pwm(CH_BODY)  or 1500
-    local v8  = rc:get_pwm(CH_BLADE) or 1500
-    local v9  = rc:get_pwm(CH_LIGHT) or 0
-    local v10 = rc:get_pwm(CH_RSV)   or 1500
+    local v1  = rc_pwm(CH_VERT,  1500)  -- center = idle
+    local v2  = rc_pwm(CH_HORT,  1500)  -- center = straight
+    local vbt = rc_pwm(CH_BTR,   1000)  -- low = battery OFF
+    local vgr = rc_pwm(CH_GEAR,  1000)  -- low = G1
+    local vsl = rc_pwm(CH_SLC,   1000)  -- low = forward
+    local vmd = rc_pwm(CH_MODE,  1000)  -- low = LAND
+    local v7  = rc_pwm(CH_BODY,  1500)  -- center = body off
+    local v8  = rc_pwm(CH_BLADE, 1500)  -- center = blade off
+    local v9  = rc_pwm(CH_LIGHT, 1000)  -- low = light OFF
+    local v10 = rc_pwm(CH_RSV,   1500)  -- center = reserve off
 
     update_gear(vgr)
     update_battery(vbt, now)
