@@ -1,4 +1,5 @@
 SCR_ENABLE 1
+SCR_HEAP_SIZE 131072
 
 # RC channel mapping: CH1=throttle (vertical stick), CH2=steering (horizontal stick)
 # Default is RCMAP_THROTTLE=3, RCMAP_ROLL=1 — must override for spring-centered joystick
