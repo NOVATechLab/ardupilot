@@ -188,44 +188,22 @@ local function update_selector(v, now)
 end
 
 -- ---------------------------------------------------------------------------
--- HYDRAULIC BRAKES (V2: pulse the pressure valves LPV/RPV directly —
+-- HYDRAULIC BRAKES (V2: drives the pressure valves LPV/RPV directly —
 --                   there are no separate release valves in V2)
 -- ---------------------------------------------------------------------------
 local brake_left_on   = false
 local brake_right_on  = false
-local brake_start_ms  = 0
-local brake_pulse_ms  = 0
-local brake_releasing = false   -- true while pressure dropped in a pulse
 
 local function _set_pressure(left, right, on)
     if left  then if on then relay_on(IDX_LPV) else relay_off(IDX_LPV) end end
     if right then if on then relay_on(IDX_RPV) else relay_off(IDX_RPV) end end
 end
 
--- Emergency / full brake with anti-lock pulsation on both sides.
-local function do_brake(left, right, now)
-    local changed = (left ~= brake_left_on) or (right ~= brake_right_on)
-    if changed then
-        brake_start_ms  = now
-        brake_pulse_ms  = now
-        brake_releasing = false
-        brake_left_on   = left
-        brake_right_on  = right
-    end
-
-    -- initial full-pressure hold
-    if now - brake_start_ms < cfg.BRK_HOLD then
-        _set_pressure(left, right, true)
-        return
-    end
-
-    -- anti-lock pulsation: alternate release / hold phases
-    local interval = brake_releasing and cfg.BRK_REL or cfg.BRK_PLS
-    if now - brake_pulse_ms >= interval then
-        brake_pulse_ms  = now
-        brake_releasing = not brake_releasing
-    end
-    _set_pressure(left, right, not brake_releasing)
+-- Emergency / full brake: hold pressure constantly on both sides (no pulsation).
+local function do_brake(left, right)
+    _set_pressure(left, right, true)
+    brake_left_on  = left
+    brake_right_on = right
 end
 
 local function un_brake()
@@ -233,8 +211,6 @@ local function un_brake()
         relay_off(IDX_LPV); relay_off(IDX_RPV)
         brake_left_on   = false
         brake_right_on  = false
-        brake_releasing = false
-        brake_pulse_ms  = 0
         log(SEV_INFO, "Brake released")
     end
 end
@@ -290,10 +266,10 @@ local land_mode = "INIT"
 local prev_land_mode = "INIT"
 
 -- Apply land braking/steering from CH1/CH2. Returns true if pump pressure needed.
-local function land_drive(v1, v2, now)
+local function land_drive(v1, v2)
     local hyd = false
     if v1 < 1400 then
-        do_brake(true, true, now)
+        do_brake(true, true)
         land_mode = "BRAKE"
         hyd = true
     elseif v2 < 1380 then
@@ -425,12 +401,12 @@ local function update()
     -- drive logic per mode
     local hyd = false
     if mode == MODE_LAND then
-        hyd = land_drive(v1, v2, now)
+        hyd = land_drive(v1, v2)
     elseif mode == MODE_SWIM then
         swim_drive(v1, v2)
         neutralize_throttle()
     else -- MODE_COMBI: land + swim simultaneously
-        hyd = land_drive(v1, v2, now)
+        hyd = land_drive(v1, v2)
         swim_drive(v1, v2)
     end
 
