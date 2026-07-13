@@ -33,7 +33,10 @@ local PWM_MAX      = 1900
 local PWM_DEADBAND = 50  -- joystick center deadband (µs)
 local HW_GUARD     = 0.05 -- stop relay when within 50mV of hard limit
 
-local pot = analog:channel(POT_CHANNEL)
+local pot = analog:channel()
+assert(pot:set_pin(POT_CHANNEL), "RACK: invalid analog pin")
+
+local last_state = nil  -- "LEFT" / "RIGHT" / "CENTER" / "LIMIT_MAX" / "LIMIT_MIN"
 
 -- ── Relay helpers ─────────────────────────────────────────────────────────
 local function relay_stop()
@@ -91,10 +94,38 @@ local function update()
 
     if math.abs(error_v) <= deadband then
         relay_stop()
+        if last_state ~= "CENTER" then
+            gcs:send_text(6, string.format("RACK: centered %.2fV", pot_v))
+            last_state = "CENTER"
+        end
     elseif error_v > 0 then
-        if pot_v >= v_max - HW_GUARD then relay_stop() else relay_right() end
+        if pot_v >= v_max - HW_GUARD then
+            relay_stop()
+            if last_state ~= "LIMIT_MAX" then
+                gcs:send_text(4, string.format("RACK: max limit reached %.2fV", pot_v))
+                last_state = "LIMIT_MAX"
+            end
+        else
+            relay_right()
+            if last_state ~= "RIGHT" then
+                gcs:send_text(6, "RACK: turn RIGHT")
+                last_state = "RIGHT"
+            end
+        end
     else
-        if pot_v <= v_min + HW_GUARD then relay_stop() else relay_left() end
+        if pot_v <= v_min + HW_GUARD then
+            relay_stop()
+            if last_state ~= "LIMIT_MIN" then
+                gcs:send_text(4, string.format("RACK: min limit reached %.2fV", pot_v))
+                last_state = "LIMIT_MIN"
+            end
+        else
+            relay_left()
+            if last_state ~= "LEFT" then
+                gcs:send_text(6, "RACK: turn LEFT")
+                last_state = "LEFT"
+            end
+        end
     end
 
     return update, 50  -- 20 Hz
