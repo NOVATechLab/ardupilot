@@ -37,6 +37,12 @@ local pot = analog:channel()
 assert(pot:set_pin(POT_CHANNEL), "RACK: invalid analog pin")
 
 local last_state = nil  -- "LEFT" / "RIGHT" / "CENTER" / "LIMIT_MAX" / "LIMIT_MIN"
+local log_counter = 0   -- throttles the periodic GCS status message
+
+-- Direction codes used in the dataflash STRK log
+local DIR_STOP  = 0
+local DIR_RIGHT = 1
+local DIR_LEFT  = 2
 
 -- ── Relay helpers ─────────────────────────────────────────────────────────
 local function relay_stop()
@@ -102,40 +108,58 @@ local function update()
     local deadband = (math.abs(pwm - PWM_CENTER) < PWM_DEADBAND)
                      and p_db_c:get() or p_db_m:get()
 
+    local dir = DIR_STOP
+
     if math.abs(error_v) <= deadband then
         relay_stop()
+        dir = DIR_STOP
         if last_state ~= "CENTER" then
-            gcs:send_text(6, string.format("RACK: centered %.2fV", pot_v))
+            gcs:send_text(6, string.format("RACK: centered pot=%.2fV", pot_v))
             last_state = "CENTER"
         end
     elseif error_v > 0 then
         if pot_v >= v_max - HW_GUARD then
             relay_stop()
+            dir = DIR_STOP
             if last_state ~= "LIMIT_MAX" then
                 gcs:send_text(4, string.format("RACK: max limit reached %.2fV", pot_v))
                 last_state = "LIMIT_MAX"
             end
         else
             relay_right()
+            dir = DIR_RIGHT
             if last_state ~= "RIGHT" then
-                gcs:send_text(6, "RACK: turn RIGHT")
+                gcs:send_text(6, string.format(
+                    "RACK: turn RIGHT pot=%.2fV tgt=%.2fV", pot_v, target_v))
                 last_state = "RIGHT"
             end
         end
     else
         if pot_v <= v_min + HW_GUARD then
             relay_stop()
+            dir = DIR_STOP
             if last_state ~= "LIMIT_MIN" then
                 gcs:send_text(4, string.format("RACK: min limit reached %.2fV", pot_v))
                 last_state = "LIMIT_MIN"
             end
         else
             relay_left()
+            dir = DIR_LEFT
             if last_state ~= "LEFT" then
-                gcs:send_text(6, "RACK: turn LEFT")
+                gcs:send_text(6, string.format(
+                    "RACK: turn LEFT pot=%.2fV tgt=%.2fV", pot_v, target_v))
                 last_state = "LEFT"
             end
         end
+    end
+
+    -- ── Periodic GCS status (~1 Hz) so you can watch it live in Messages ──
+    log_counter = log_counter + 1
+    if log_counter >= 20 then
+        log_counter = 0
+        gcs:send_text(6, string.format(
+            "RACK: pwm=%d pot=%.2fV tgt=%.2fV err=%+.2fV dir=%d",
+            pwm, pot_v, target_v, error_v, dir))
     end
 
     return update, 50  -- 20 Hz
