@@ -80,6 +80,16 @@ local function update()
     local v_min = p_v_min:get()
     local v_max = p_v_max:get()
 
+    -- no valid steering output yet (pre-arm / failsafe / unassigned) → hold
+    if pwm == nil then
+        relay_stop()
+        if last_state ~= "NO_PWM" then
+            gcs:send_text(4, "RACK: no steering output")
+            last_state = "NO_PWM"
+        end
+        return update, 200
+    end
+
     -- pot sanity check (disconnected or shorted)
     if pot_v < 0.1 or pot_v > 3.3 then
         relay_stop()
