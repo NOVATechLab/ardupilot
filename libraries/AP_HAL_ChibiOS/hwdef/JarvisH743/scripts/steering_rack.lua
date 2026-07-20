@@ -159,8 +159,8 @@ local function update()
     if log_counter >= 20 then
         log_counter = 0
         gcs:send_text(6, string.format(
-            "RACK: pwm=%d pot=%.2fV tgt=%.2fV err=%+.2fV dir=%d",
-            pwm, pot_v, target_v, error_v, dir))
+            "RACK p=%d pot=%.2f e=%+.2f d=%d",
+            pwm, pot_v, error_v, dir))
     end
 
     return update, 50  -- 20 Hz
