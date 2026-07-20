@@ -24,9 +24,10 @@ local p_db_c  = Parameter(); p_db_c:init("JRVS_RACK_DB_C")
 local p_db_m  = Parameter(); p_db_m:init("JRVS_RACK_DB_M")
 
 -- ── Constants ─────────────────────────────────────────────────────────────
-local RELAY_LEFT   = 1   -- RELAY1 = PE8
-local RELAY_RIGHT  = 2   -- RELAY2 = PE7
+local RELAY_LEFT   = 0   -- RELAY1 = PE8 (relay instance is 0-based!)
+local RELAY_RIGHT  = 1   -- RELAY2 = PE7
 local POT_CHANNEL  = 9   -- ADC1_INP9 = PB0
+local FUNC_STEERING = 26 -- SRV_Channel k_steering (GroundSteering), NOT a channel index
 local PWM_MIN      = 1100
 local PWM_CENTER   = 1500
 local PWM_MAX      = 1900
@@ -81,7 +82,7 @@ end
 
 -- ── Main loop ─────────────────────────────────────────────────────────────
 local function update()
-    local pwm   = SRV_Channels:get_output_pwm(1)
+    local pwm   = SRV_Channels:get_output_pwm(FUNC_STEERING)
     local pot_v = pot:voltage_average()
     local v_min = p_v_min:get()
     local v_max = p_v_max:get()
