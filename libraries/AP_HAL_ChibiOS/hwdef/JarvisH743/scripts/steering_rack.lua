@@ -7,21 +7,24 @@
 local PARAM_TABLE_KEY    = 72
 local PARAM_TABLE_PREFIX = "JRVS_"
 
-assert(param:add_table(PARAM_TABLE_KEY, PARAM_TABLE_PREFIX, 5),
+assert(param:add_table(PARAM_TABLE_KEY, PARAM_TABLE_PREFIX, 6),
     "RACK: failed to add param table")
 assert(param:add_param(PARAM_TABLE_KEY, 1, "RACK_V_MIN", 2.00), "RACK: param 1")
 assert(param:add_param(PARAM_TABLE_KEY, 2, "RACK_V_CTR", 2.62), "RACK: param 2")
 assert(param:add_param(PARAM_TABLE_KEY, 3, "RACK_V_MAX", 3.26), "RACK: param 3")
 assert(param:add_param(PARAM_TABLE_KEY, 4, "RACK_DB_C",  0.07), "RACK: param 4")
 assert(param:add_param(PARAM_TABLE_KEY, 5, "RACK_DB_M",  0.04), "RACK: param 5")
+assert(param:add_param(PARAM_TABLE_KEY, 6, "RACK_OL",    0),    "RACK: param 6")
 
 -- Full names: JRVS_RACK_V_MIN, JRVS_RACK_V_CTR, JRVS_RACK_V_MAX
 --             JRVS_RACK_DB_C (deadband at center),  JRVS_RACK_DB_M (deadband while moving)
+--             JRVS_RACK_OL   (0=closed-loop using pot, 1=open-loop diagnostic - see below)
 local p_v_min = Parameter(); p_v_min:init("JRVS_RACK_V_MIN")
 local p_v_ctr = Parameter(); p_v_ctr:init("JRVS_RACK_V_CTR")
 local p_v_max = Parameter(); p_v_max:init("JRVS_RACK_V_MAX")
 local p_db_c  = Parameter(); p_db_c:init("JRVS_RACK_DB_C")
 local p_db_m  = Parameter(); p_db_m:init("JRVS_RACK_DB_M")
+local p_ol    = Parameter(); p_ol:init("JRVS_RACK_OL")
 
 -- ── Constants ─────────────────────────────────────────────────────────────
 local RELAY_LEFT   = 0   -- RELAY1 = PE8 (relay instance is 0-based!)
@@ -95,6 +98,48 @@ local function update()
             last_state = "NO_PWM"
         end
         return update, 200
+    end
+
+    -- ── OPEN-LOOP diagnostic mode (JRVS_RACK_OL=1) ──────────────────────────
+    -- Bypasses the potentiometer entirely and drives relays straight off PWM.
+    -- Use this to tell apart "pot/feedback problem" from "relay/board/motor
+    -- problem": if the rack moves correctly here, the pot/wiring to it is
+    -- the fault; if it still doesn't move, the fault is downstream of the
+    -- relay (board, wiring to the motor, or the motor/actuator itself).
+    -- NOTE: no software end-stop protection in this mode - watch the rack!
+    if p_ol:get() > 0 then
+        local dir = DIR_STOP
+        if pwm < PWM_CENTER - PWM_DEADBAND then
+            relay_left()
+            dir = DIR_LEFT
+            if last_state ~= "OL_LEFT" then
+                gcs:send_text(6, "RACK OL: turn LEFT")
+                last_state = "OL_LEFT"
+            end
+        elseif pwm > PWM_CENTER + PWM_DEADBAND then
+            relay_right()
+            dir = DIR_RIGHT
+            if last_state ~= "OL_RIGHT" then
+                gcs:send_text(6, "RACK OL: turn RIGHT")
+                last_state = "OL_RIGHT"
+            end
+        else
+            relay_stop()
+            dir = DIR_STOP
+            if last_state ~= "OL_CENTER" then
+                gcs:send_text(6, "RACK OL: stop")
+                last_state = "OL_CENTER"
+            end
+        end
+
+        log_counter = log_counter + 1
+        if log_counter >= 20 then
+            log_counter = 0
+            gcs:send_text(6, string.format(
+                "RACK OL p=%d pot=%.2f d=%d (pot ignored)", pwm, pot_v, dir))
+        end
+
+        return update, 50
     end
 
     -- pot sanity check (disconnected or shorted)
