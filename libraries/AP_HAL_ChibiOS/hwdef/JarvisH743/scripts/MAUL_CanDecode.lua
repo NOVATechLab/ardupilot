@@ -3,7 +3,7 @@
 -- =============================================================================
 -- Purely passive listener. Never writes to the bus. Decodes the broadcast frames
 -- documented in debug/canam_can_map.md and publishes them into the global table
--- _G.MAUL_CAN so MAUL_Control.lua can read them (gear feedback + speed feed the
+-- MAUL_CAN so MAUL_Control.lua can read them (gear feedback + speed feed the
 -- gear-change safety interlock; the rest is telemetry).
 --
 -- Requires one CAN port set to CAN_Dx_PROTOCOL=10 (Scripting), bitrate 500000,
@@ -69,7 +69,7 @@ local last_nodata_warn_ms = 0
 -- Shared output table — MAUL_Control.lua reads this. ts_* fields are millis()
 -- timestamps of the last accepted frame for that message, for staleness checks.
 -- ---------------------------------------------------------------------------
-_G.MAUL_CAN = {
+MAUL_CAN = {
     pedal_pct      = 0,
     pedal_pressed  = false,
     shaft_locked   = false,
@@ -126,57 +126,57 @@ end
 
 local function handle_pedal(frame, now)
     if not checksum_ok(frame) then return end
-    _G.MAUL_CAN.pedal_pct     = frame:data(0) * 100.0 / 254.0
-    _G.MAUL_CAN.pedal_pressed = (frame:data(3) & 0x40) ~= 0
-    _G.MAUL_CAN.shaft_locked  = (frame:data(3) & 0x01) ~= 0
-    _G.MAUL_CAN.ts_103        = now
+    MAUL_CAN.pedal_pct     = frame:data(0) * 100.0 / 254.0
+    MAUL_CAN.pedal_pressed = (frame:data(3) & 0x40) ~= 0
+    MAUL_CAN.shaft_locked  = (frame:data(3) & 0x01) ~= 0
+    MAUL_CAN.ts_103        = now
 end
 
 local function handle_gear(frame, now)
     if not checksum_ok(frame) then return end
     local b0, b1 = frame:data(0), frame:data(1)
     local gear = GEAR_MAP[b0]
-    _G.MAUL_CAN.gear_valid = (b0 == b1) and (gear ~= nil)
-    _G.MAUL_CAN.gear       = _G.MAUL_CAN.gear_valid and gear or "INVALID"
-    _G.MAUL_CAN.ts_309     = now
+    MAUL_CAN.gear_valid = (b0 == b1) and (gear ~= nil)
+    MAUL_CAN.gear       = MAUL_CAN.gear_valid and gear or "INVALID"
+    MAUL_CAN.ts_309     = now
 end
 
 local function handle_shaftlock2(frame, now)
     if not checksum_ok(frame) then return end
     -- duplicate of the 0x103 lock bit, kept only as a cross-check / future use
-    _G.MAUL_CAN.shaft_locked = (frame:data(0) & 0x01) ~= 0
-    _G.MAUL_CAN.ts_103       = now
+    MAUL_CAN.shaft_locked = (frame:data(0) & 0x01) ~= 0
+    MAUL_CAN.ts_103       = now
 end
 
 local function handle_drivemode(frame, now)
-    _G.MAUL_CAN.drive_4wd = (frame:data(5) & 0x10) ~= 0
-    _G.MAUL_CAN.ts_400    = now
+    MAUL_CAN.drive_4wd = (frame:data(5) & 0x10) ~= 0
+    MAUL_CAN.ts_400    = now
 end
 
 local function handle_rpm(frame, now)
-    _G.MAUL_CAN.rpm         = (frame:data(2) << 8) | frame:data(3)
-    _G.MAUL_CAN.engine_load = frame:data(5)
-    _G.MAUL_CAN.ts_102      = now
+    MAUL_CAN.rpm         = (frame:data(2) << 8) | frame:data(3)
+    MAUL_CAN.engine_load = frame:data(5)
+    MAUL_CAN.ts_102      = now
 end
 
 local function handle_speed(frame, now)
-    _G.MAUL_CAN.speed_kmh = ((frame:data(0) << 8) | frame:data(1)) / 10.0
-    _G.MAUL_CAN.ts_231    = now
+    MAUL_CAN.speed_kmh = ((frame:data(0) << 8) | frame:data(1)) / 10.0
+    MAUL_CAN.ts_231    = now
 end
 
 local function handle_fuel(frame, now)
     local raw = frame:data(4)
-    _G.MAUL_CAN.fuel_sensor_open = (raw == 0x7F)
+    MAUL_CAN.fuel_sensor_open = (raw == 0x7F)
     if raw ~= 0x7F then
-        _G.MAUL_CAN.fuel_pct = raw
+        MAUL_CAN.fuel_pct = raw
     end
-    _G.MAUL_CAN.ts_530 = now
+    MAUL_CAN.ts_530 = now
 end
 
 local function handle_fuelfault(frame, now)
-    _G.MAUL_CAN.fuel_fault   = not (frame:data(2) == 0x99 and frame:data(3) == 0x99)
-    _G.MAUL_CAN.batt_voltage = frame:data(4) * 0.1
-    _G.MAUL_CAN.ts_342       = now
+    MAUL_CAN.fuel_fault   = not (frame:data(2) == 0x99 and frame:data(3) == 0x99)
+    MAUL_CAN.batt_voltage = frame:data(4) * 0.1
+    MAUL_CAN.ts_342       = now
 end
 
 local function note_first_seen(frame)
@@ -234,12 +234,12 @@ local function update()
             log(SEV_INFO, string.format(
                 "frames=%d gear=%s(%s) spd=%.1f rpm=%d pedal=%.0f%% batt=%.1fV",
                 total_frames,
-                _G.MAUL_CAN.gear,
-                _G.MAUL_CAN.gear_valid and "ok" or "inv",
-                _G.MAUL_CAN.speed_kmh,
-                _G.MAUL_CAN.rpm,
-                _G.MAUL_CAN.pedal_pct,
-                _G.MAUL_CAN.batt_voltage))
+                MAUL_CAN.gear,
+                MAUL_CAN.gear_valid and "ok" or "inv",
+                MAUL_CAN.speed_kmh,
+                MAUL_CAN.rpm,
+                MAUL_CAN.pedal_pct,
+                MAUL_CAN.batt_voltage))
         end
     end
 

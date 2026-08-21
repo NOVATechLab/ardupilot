@@ -226,7 +226,7 @@ local function calibration_tick(now)
     if now - cal_last_step_ms >= cfg.CAL_STEP_MS then
         cal_last_step_ms = now
 
-        local can = _G.MAUL_CAN
+        local can = MAUL_CAN
         if can and can.gear_valid and (now - can.ts_309 < cfg.CAN_TIMEOUT) then
             local w = cal_windows[can.gear]
             if w then
@@ -266,7 +266,7 @@ local function update()
 
     target_gear = target_gear_from_pwm(vgear)
 
-    local can = _G.MAUL_CAN
+    local can = MAUL_CAN
     local can_gear_fresh  = can and (now - can.ts_309 < cfg.CAN_TIMEOUT)
     local can_speed_fresh = can and (now - can.ts_231 < cfg.CAN_TIMEOUT)
     local confirmed_gear  = (can_gear_fresh and can.gear_valid) and can.gear or "UNKNOWN"
