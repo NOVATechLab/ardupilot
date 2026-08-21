@@ -89,6 +89,11 @@ MAUL_STR_MIN_GAIN 0.3
 # --- Can-Am OEM CAN bus: passive decode only (MAUL_CanDecode.lua) on CAN2 ---
 CAN_D2_PROTOCOL 10
 
+# Bring-up logging: periodic decoded-values summary in GCS messages, on by
+# default for initial bench testing. Set MAULCAN_DBG=0 once confirmed working.
+MAULCAN_DBG 1
+MAULCAN_DBG_MS 2000
+
 # --- Speed / navigation config ---
 CRUISE_SPEED 2
 CRUISE_THROTTLE 50
