@@ -14,12 +14,80 @@ AHRS_ORIENTATION 2
 ARMING_CHECK 0
 COMPASS_ENABLE 0
 
-# --- Steering setup (skid steering) ---
-SERVO1_FUNCTION 74
-SERVO2_FUNCTION 73
+# --- UGV_Maul: Can-Am/BRP quad, Ackermann steering rack. Gas/steering are
+# native ArduPilot outputs; brake/gear are Lua-owned (MAUL_Control.lua). ---
+# RC: CH1=throttle+brake stick (native RCMAP_THROTTLE feeds AP's own throttle
+#     mixer AND is read directly by MAUL_Control.lua for brake/gear-interlock
+#     decisions), CH2=steering (native RCMAP_ROLL), CH6=gear selector
+#     (Lua-only, see MAUL_Control.lua).
+RCMAP_ROLL 2
+RCMAP_THROTTLE 1
+
+# Throttle channel (CH1) is ArduPilot's native ANGLE-type input (symmetric
+# around RC1_TRIM, see RC_Channel::pwm_to_angle_dz_trim): raw PWM inside
+# [RC1_TRIM-RC1_DZ, RC1_TRIM+RC1_DZ] = 0% (idle), below that = negative demand
+# (clamped to idle by SERVO2_MIN=SERVO2_TRIM below), above that = ramps to
+# 100% at RC1_MAX. With TRIM=1500/DZ=30 the idle zone is 1470-1530.
+# MUST stay equal to MAUL_THR_DZ_LO/HI below (trim-dz / trim+dz) if retuned.
+RC1_MIN 1000
+RC1_TRIM 1500
+RC1_MAX 2000
+RC1_DZ 30
+
+# SERVO1 = steering rack (native AP steering controller)
+SERVO1_FUNCTION 26
+SERVO1_MIN 1000
+SERVO1_TRIM 1500
+SERVO1_MAX 2000
+
+# SERVO2 = gas actuator (native AP throttle output, k_throttle). MIN=TRIM so
+# any negative/reverse demand from the ANGLE-scaled RC1 input clamps to idle
+# instead of driving the pedal actuator backwards. MAUL_Control.lua only ever
+# overrides this channel to force idle when the gear is not R/L/H.
+SERVO2_FUNCTION 70
+SERVO2_MIN 1500
+SERVO2_TRIM 1500
+SERVO2_MAX 2000
+
+# SERVO3 = gear-selector actuator P/N/R/L/H (Lua-owned, k_scripting1)
+SERVO3_FUNCTION 94
+SERVO3_MIN 1000
+SERVO3_TRIM 1500
+SERVO3_MAX 2000
+
+# SERVO4 = brake actuator, 1000=released 2000=squeezed (Lua-owned, k_scripting2)
+SERVO4_FUNCTION 95
+SERVO4_MIN 1000
+SERVO4_TRIM 1000
+SERVO4_MAX 2000
+
 MANUAL_OPTIONS 0
 MANUAL_STR_EXPO 0
 MANUAL_STR_SLEW 50
+
+# --- MAUL gear/brake/interlock tuning (table 73, see MAUL_Control.lua) ---
+# Gear PWMs are UNCALIBRATED placeholders - measure on the real actuator
+# before relying on them.
+MAUL_P_SVO 1500
+MAUL_N_SVO 1500
+MAUL_R_SVO 1500
+MAUL_L_SVO 1500
+MAUL_H_SVO 1500
+MAUL_BRK_MIN 1000
+MAUL_BRK_MAX 2000
+MAUL_THR_DZ_LO 1470
+MAUL_THR_DZ_HI 1530
+MAUL_GEAR_SPD_MX 0.3
+MAUL_CAN_TIMEOUT 200
+
+# Speed-based steering attenuation. Disabled (0) until bench/road tested;
+# set MAUL_STR_ATT_EN=1 to enable once happy with the feel.
+MAUL_STR_ATT_EN 0
+MAUL_STR_SPD_MAX 50
+MAUL_STR_MIN_GAIN 0.3
+
+# --- Can-Am OEM CAN bus: passive decode only (MAUL_CanDecode.lua) on CAN2 ---
+CAN_D2_PROTOCOL 10
 
 # --- Speed / navigation config ---
 CRUISE_SPEED 2
@@ -65,12 +133,12 @@ PSC_VEL_FLTE 5
 MOT_PWM_FREQ 16
 MOT_PWM_TYPE 0
 MOT_SLEWRATE 100
-MOT_STR_THR_MIX 0.5
 MOT_THR_MAX 100
 MOT_THR_MIN 0
 MOT_THST_ASYM 1
 
-# --- DroneCAN / ESC over CAN ---
+# --- CAN port 1: unused by this vehicle (no DroneCAN devices), left configured
+#     in case it's needed later. Port 2 is the Can-Am bus, see MAUL block above.
 CAN_P1_DRIVER 1
 CAN_P1_BITRATE 500000
 CAN_P1_FDBITRATE 4
@@ -81,7 +149,6 @@ CAN_D1_UC_ESC_RV 7
 CAN_D1_UC_SRV_BM 3072
 CAN_P2_DRIVER 2
 CAN_P2_BITRATE 500000
-CAN_D2_PROTOCOL 1
 
 # --- Battery monitors ---
 BATT_MONITOR 9
@@ -130,10 +197,10 @@ MODE_CH 8
 INITIAL_MODE 0
 
 # --- RC config ---
+# RC1 (throttle) calibration/deadzone is set in the UGV_Maul block above.
 RC_PROTOCOLS 1
 RC_OPTIONS 32
 RC_OVERRIDE_TIME 3
-RC1_DZ 30
 RC3_DZ 30
 RC4_DZ 30
 RC5_OPTION 153
