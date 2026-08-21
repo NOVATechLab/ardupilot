@@ -4,6 +4,7 @@
 
 # --- Scripting (existing, keep enabled for board lua scripts) ---
 SCR_ENABLE 1
+SCR_HEAP_SIZE 150000
 
 # --- Frame / mounting ---
 FRAME_CLASS 1
@@ -86,13 +87,13 @@ MAUL_STR_ATT_EN 0
 MAUL_STR_SPD_MAX 50
 MAUL_STR_MIN_GAIN 0.3
 
-# --- Can-Am OEM CAN bus: passive decode only (MAUL_CanDecode.lua) on CAN2 ---
+# --- Can-Am OEM CAN bus: passive decode only (inside MAUL_Control.lua) on CAN2 ---
 CAN_D2_PROTOCOL 10
 
 # Bring-up logging: periodic decoded-values summary in GCS messages, on by
-# default for initial bench testing. Set MAULCAN_DBG=0 once confirmed working.
-MAULCAN_DBG 1
-MAULCAN_DBG_MS 2000
+# default for initial bench testing. Set MAUL_CANDBG=0 once confirmed working.
+MAUL_CANDBG 1
+MAUL_CANDBG_MS 2000
 
 # --- Speed / navigation config ---
 CRUISE_SPEED 2
