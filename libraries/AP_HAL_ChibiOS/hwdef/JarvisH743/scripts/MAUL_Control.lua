@@ -249,14 +249,15 @@ end
 
 -- ---------------------------------------------------------------------------
 -- GEAR-SELECTOR CHANNEL ZONES (provisional 5-way split, adjust to match the
--- actual switch/pot RC_OVERRIDE spread once bench-tested)
+-- actual switch/pot RC_OVERRIDE spread once bench-tested). Order confirmed
+-- on the real selector 2026-08-22: P, R, N, H, L.
 -- ---------------------------------------------------------------------------
 local function target_gear_from_pwm(v)
     if v < 1180 then return "P"
-    elseif v < 1360 then return "N"
-    elseif v < 1540 then return "R"
-    elseif v < 1720 then return "L"
-    else return "H" end
+    elseif v < 1360 then return "R"
+    elseif v < 1540 then return "N"
+    elseif v < 1720 then return "H"
+    else return "L" end
 end
 
 -- ---------------------------------------------------------------------------
