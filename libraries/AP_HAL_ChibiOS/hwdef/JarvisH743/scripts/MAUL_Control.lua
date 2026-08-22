@@ -121,113 +121,121 @@ local function add_param(idx, name, default)
     return p
 end
 
+-- All Parameter() objects live in one table, not one `local` each -- this
+-- board's Lua build caps the main chunk at 100 local variables
+-- ("too many local variables (limit is 100) in main function"), and 37
+-- separate P_XXX locals (plus everything else at file scope) blew past that.
+-- Table FIELD assignments below are NOT `local` declarations, so they don't
+-- count against the limit -- only the one `local P = {}` does.
+local P = {}
+
 -- Gear-selector actuator PWM per position. UNCALIBRATED: default is a neutral
 -- placeholder (1500) for every position until measured on the real actuator.
-local P_P_SVO    = add_param(1,  'P_SVO',      1500)
-local P_N_SVO    = add_param(2,  'N_SVO',      1500)
-local P_R_SVO    = add_param(3,  'R_SVO',      1500)
-local P_L_SVO    = add_param(4,  'L_SVO',      1500)
-local P_H_SVO    = add_param(5,  'H_SVO',      1500)
-local P_BRK_MIN  = add_param(6,  'BRK_MIN',    1000)  -- brake released
-local P_BRK_MAX  = add_param(7,  'BRK_MAX',    2000)  -- brake fully squeezed
-local P_THR_DZLO = add_param(8,  'THR_DZ_LO',  1470)  -- idle zone low bound (raw CH1)
-local P_THR_DZHI = add_param(9,  'THR_DZ_HI',  1530)  -- idle zone high bound (raw CH1) -- keep in sync with RC1_TRIM +/- RC1_DZ!
-local P_GEAR_SPD = add_param(10, 'GEAR_SPD_MX',  4)   -- GearShift_SafeSpeed (km/h): below this AND GEAR_SAFRPM, a shift may proceed
-local P_CAN_TOMS = add_param(11, 'CAN_TIMEOUT', 200)  -- CAN feedback staleness timeout (ms)
+P.P_SVO    = add_param(1,  'P_SVO',      1500)
+P.N_SVO    = add_param(2,  'N_SVO',      1500)
+P.R_SVO    = add_param(3,  'R_SVO',      1500)
+P.L_SVO    = add_param(4,  'L_SVO',      1500)
+P.H_SVO    = add_param(5,  'H_SVO',      1500)
+P.BRK_MIN  = add_param(6,  'BRK_MIN',    1000)  -- brake released
+P.BRK_MAX  = add_param(7,  'BRK_MAX',    2000)  -- brake fully squeezed
+P.THR_DZLO = add_param(8,  'THR_DZ_LO',  1470)  -- idle zone low bound (raw CH1)
+P.THR_DZHI = add_param(9,  'THR_DZ_HI',  1530)  -- idle zone high bound (raw CH1) -- keep in sync with RC1_TRIM +/- RC1_DZ!
+P.GEAR_SPD = add_param(10, 'GEAR_SPD_MX',  4)   -- GearShift_SafeSpeed (km/h): below this AND GEAR_SAFRPM, a shift may proceed
+P.CAN_TOMS = add_param(11, 'CAN_TIMEOUT', 200)  -- CAN feedback staleness timeout (ms)
 
 -- Speed-based steering attenuation ("progressive steering" per client spec).
 -- Disabled by default (0) until bench/road tested -- see debug/MAUL_UGV_README.md.
-local P_STR_ATT_EN  = add_param(12, 'STR_ATT_EN',   0)   -- 0=disabled, 1=enabled
-local P_STR_SPD_MAX = add_param(13, 'STR_SPD_MAX', 50)   -- km/h at which gain reaches STR_MIN_GAIN
-local P_STR_MINGAIN = add_param(14, 'STR_MIN_GAIN', 0.3) -- steering gain (0-1) at/above STR_SPD_MAX
+P.STR_ATT_EN  = add_param(12, 'STR_ATT_EN',   0)   -- 0=disabled, 1=enabled
+P.STR_SPD_MAX = add_param(13, 'STR_SPD_MAX', 50)   -- km/h at which gain reaches STR_MIN_GAIN
+P.STR_MINGAIN = add_param(14, 'STR_MIN_GAIN', 0.3) -- steering gain (0-1) at/above STR_SPD_MAX
 
 -- Gear-selector calibration sweep assist. Set MAUL_CAL_RUN=1 (bench only,
 -- gearbox open, see debug/MAUL_UGV_README.md) to slowly sweep SERVO3 across
 -- its full range while recording, per gear, the PWM window in which CAN
 -- 0x309 reports that gear -- then log a suggested MAUL_*_SVO midpoint for
 -- each. Auto-clears itself back to 0 when the sweep completes.
-local P_CAL_RUN     = add_param(15, 'CAL_RUN',      0)   -- 0=idle, 1=start/running sweep
-local P_CAL_STEP    = add_param(16, 'CAL_STEP',     5)   -- pwm step per tick
-local P_CAL_STEPMS  = add_param(17, 'CAL_STEP_MS', 200)  -- ms between steps (let mechanism settle)
+P.CAL_RUN     = add_param(15, 'CAL_RUN',      0)   -- 0=idle, 1=start/running sweep
+P.CAL_STEP    = add_param(16, 'CAL_STEP',     5)   -- pwm step per tick
+P.CAL_STEPMS  = add_param(17, 'CAL_STEP_MS', 200)  -- ms between steps (let mechanism settle)
 
 -- Bring-up CAN debug logging (see header comment).
-local P_CANDBG     = add_param(18, 'CANDBG',     1)     -- 0=off, 1=periodic decoded summary in GCS messages
-local P_CANDBG_MS  = add_param(19, 'CANDBG_MS', 2000)   -- ms between summary logs when CANDBG=1
+P.CANDBG     = add_param(18, 'CANDBG',     1)     -- 0=off, 1=periodic decoded summary in GCS messages
+P.CANDBG_MS  = add_param(19, 'CANDBG_MS', 2000)   -- ms between summary logs when CANDBG=1
 
 -- --- Gearbox mode logic ---
-local P_GEAR_SAFRPM = add_param(20, 'GEAR_SAFRPM', 1900)  -- GearShift_SafeRPM
-local P_GEAR_MAXT   = add_param(21, 'GEAR_MAXT',   4500)  -- GearShift_MaxTime (ms): expected actuator travel time + 15%
-local P_GEAR_TOUT   = add_param(22, 'GEAR_TOUT',  15000)  -- GearShift_Timeout (ms), added on top of GEAR_MAXT before protect-cutoff
+P.GEAR_SAFRPM = add_param(20, 'GEAR_SAFRPM', 1900)  -- GearShift_SafeRPM
+P.GEAR_MAXT   = add_param(21, 'GEAR_MAXT',   4500)  -- GearShift_MaxTime (ms): expected actuator travel time + 15%
+P.GEAR_TOUT   = add_param(22, 'GEAR_TOUT',  15000)  -- GearShift_Timeout (ms), added on top of GEAR_MAXT before protect-cutoff
 
 -- --- Brake mode logic ---
-local P_BRK_AAPFRC  = add_param(23, 'BRK_AAPFRC',   40)   -- Brakes_AutoApply_Force (%)
-local P_BRK_HANDFRC = add_param(24, 'BRK_HANDFRC', 100)   -- Brakes_Handbrake_Force (%)
-local P_BRK_RELRPM  = add_param(25, 'BRK_RELRPM',  1950)  -- Brakes_Auto_Release_RPM
-local P_BRK_HOLDMS  = add_param(26, 'BRK_HOLDMS',  3000)  -- stick held full-down duration to engage handbrake (ms)
-local P_BRK_DBLPCT  = add_param(27, 'BRK_DBLPCT',    95)  -- stick travel %% for a "click" of the double-press release
-local P_BRK_DBLMS   = add_param(28, 'BRK_DBLMS',    600)  -- max gap between the two clicks (ms)
-local P_BRK_AADELAY = add_param(29, 'BRK_AADELAY', 5000)  -- Brakes_AutoApply_Delay (ms) -- PLACEHOLDER, client TZ gave no number, confirm
-local P_BRK_AASTEP  = add_param(30, 'BRK_AASTEP',    10)  -- hill-hold escalation step (%)
-local P_BRK_AAPRD   = add_param(31, 'BRK_AAPRD',   1000)  -- hill-hold escalation period (ms)
-local P_BRK_SBYMS   = add_param(32, 'BRK_SBYMS',  20000)  -- Brakes_Standby_Delay (ms) before PWM=0 sleep
+P.BRK_AAPFRC  = add_param(23, 'BRK_AAPFRC',   40)   -- Brakes_AutoApply_Force (%)
+P.BRK_HANDFRC = add_param(24, 'BRK_HANDFRC', 100)   -- Brakes_Handbrake_Force (%)
+P.BRK_RELRPM  = add_param(25, 'BRK_RELRPM',  1950)  -- Brakes_Auto_Release_RPM
+P.BRK_HOLDMS  = add_param(26, 'BRK_HOLDMS',  3000)  -- stick held full-down duration to engage handbrake (ms)
+P.BRK_DBLPCT  = add_param(27, 'BRK_DBLPCT',    95)  -- stick travel %% for a "click" of the double-press release
+P.BRK_DBLMS   = add_param(28, 'BRK_DBLMS',    600)  -- max gap between the two clicks (ms)
+P.BRK_AADELAY = add_param(29, 'BRK_AADELAY', 5000)  -- Brakes_AutoApply_Delay (ms) -- PLACEHOLDER, client TZ gave no number, confirm
+P.BRK_AASTEP  = add_param(30, 'BRK_AASTEP',    10)  -- hill-hold escalation step (%)
+P.BRK_AAPRD   = add_param(31, 'BRK_AAPRD',   1000)  -- hill-hold escalation period (ms)
+P.BRK_SBYMS   = add_param(32, 'BRK_SBYMS',  20000)  -- Brakes_Standby_Delay (ms) before PWM=0 sleep
 
 -- --- Failsafe (own timer, independent of native FS_TIMEOUT/FS_ACTION -- see
 -- debug/MAUL_UGV_README.md; this one gates the scripting-owned brake/gear/gas
 -- actuators that the native RC failsafe path doesn't touch) ---
-local P_FS_DLYMS   = add_param(33, 'FS_DLYMS',  800)   -- FS_Delay_time (ms)
-local P_FS_THRPWM  = add_param(34, 'FS_THRPWM', 1500)  -- FS_Throttle_PWM
-local P_FS_BRKFRC  = add_param(35, 'FS_BRKFRC',   70)  -- FS_Brake_force (%)
+P.FS_DLYMS   = add_param(33, 'FS_DLYMS',  800)   -- FS_Delay_time (ms)
+P.FS_THRPWM  = add_param(34, 'FS_THRPWM', 1500)  -- FS_Throttle_PWM
+P.FS_BRKFRC  = add_param(35, 'FS_BRKFRC',   70)  -- FS_Brake_force (%)
 
 -- --- Steering: diff-lock max angle clamp ---
-local P_STR_DLMXANG = add_param(36, 'STR_DLMXANG', 100)  -- max PWM deviation from SERVO1_TRIM while diff-lock active -- UNCALIBRATED placeholder
+P.STR_DLMXANG = add_param(36, 'STR_DLMXANG', 100)  -- max PWM deviation from SERVO1_TRIM while diff-lock active -- UNCALIBRATED placeholder
 
 -- --- Front diff-lock timer ---
-local P_DL_WORKT = add_param(37, 'DL_WORKT', 180)  -- DifLock_Work_Time (s)
+P.DL_WORKT = add_param(37, 'DL_WORKT', 180)  -- DifLock_Work_Time (s)
 
 local cfg = {}
 local function refresh_cfg()
-    cfg.P_SVO      = P_P_SVO:get()
-    cfg.N_SVO      = P_N_SVO:get()
-    cfg.R_SVO      = P_R_SVO:get()
-    cfg.L_SVO      = P_L_SVO:get()
-    cfg.H_SVO      = P_H_SVO:get()
-    cfg.BRK_MIN    = P_BRK_MIN:get()
-    cfg.BRK_MAX    = P_BRK_MAX:get()
-    cfg.THR_DZ_LO  = P_THR_DZLO:get()
-    cfg.THR_DZ_HI  = P_THR_DZHI:get()
-    cfg.GEAR_SPD_MX = P_GEAR_SPD:get()
-    cfg.CAN_TIMEOUT = P_CAN_TOMS:get()
-    cfg.STR_ATT_EN  = P_STR_ATT_EN:get()
-    cfg.STR_SPD_MAX = P_STR_SPD_MAX:get()
-    cfg.STR_MIN_GAIN = P_STR_MINGAIN:get()
-    cfg.CAL_RUN     = P_CAL_RUN:get()
-    cfg.CAL_STEP    = P_CAL_STEP:get()
-    cfg.CAL_STEP_MS = P_CAL_STEPMS:get()
-    cfg.CANDBG      = P_CANDBG:get()
-    cfg.CANDBG_MS   = P_CANDBG_MS:get()
+    cfg.P_SVO      = P.P_SVO:get()
+    cfg.N_SVO      = P.N_SVO:get()
+    cfg.R_SVO      = P.R_SVO:get()
+    cfg.L_SVO      = P.L_SVO:get()
+    cfg.H_SVO      = P.H_SVO:get()
+    cfg.BRK_MIN    = P.BRK_MIN:get()
+    cfg.BRK_MAX    = P.BRK_MAX:get()
+    cfg.THR_DZ_LO  = P.THR_DZLO:get()
+    cfg.THR_DZ_HI  = P.THR_DZHI:get()
+    cfg.GEAR_SPD_MX = P.GEAR_SPD:get()
+    cfg.CAN_TIMEOUT = P.CAN_TOMS:get()
+    cfg.STR_ATT_EN  = P.STR_ATT_EN:get()
+    cfg.STR_SPD_MAX = P.STR_SPD_MAX:get()
+    cfg.STR_MIN_GAIN = P.STR_MINGAIN:get()
+    cfg.CAL_RUN     = P.CAL_RUN:get()
+    cfg.CAL_STEP    = P.CAL_STEP:get()
+    cfg.CAL_STEP_MS = P.CAL_STEPMS:get()
+    cfg.CANDBG      = P.CANDBG:get()
+    cfg.CANDBG_MS   = P.CANDBG_MS:get()
 
-    cfg.GEAR_SAFRPM = P_GEAR_SAFRPM:get()
-    cfg.GEAR_MAXT   = P_GEAR_MAXT:get()
-    cfg.GEAR_TOUT   = P_GEAR_TOUT:get()
+    cfg.GEAR_SAFRPM = P.GEAR_SAFRPM:get()
+    cfg.GEAR_MAXT   = P.GEAR_MAXT:get()
+    cfg.GEAR_TOUT   = P.GEAR_TOUT:get()
 
-    cfg.BRK_AAPFRC  = P_BRK_AAPFRC:get()
-    cfg.BRK_HANDFRC = P_BRK_HANDFRC:get()
-    cfg.BRK_RELRPM  = P_BRK_RELRPM:get()
-    cfg.BRK_HOLDMS  = P_BRK_HOLDMS:get()
-    cfg.BRK_DBLPCT  = P_BRK_DBLPCT:get()
-    cfg.BRK_DBLMS   = P_BRK_DBLMS:get()
-    cfg.BRK_AADELAY = P_BRK_AADELAY:get()
-    cfg.BRK_AASTEP  = P_BRK_AASTEP:get()
-    cfg.BRK_AAPRD   = P_BRK_AAPRD:get()
-    cfg.BRK_SBYMS   = P_BRK_SBYMS:get()
+    cfg.BRK_AAPFRC  = P.BRK_AAPFRC:get()
+    cfg.BRK_HANDFRC = P.BRK_HANDFRC:get()
+    cfg.BRK_RELRPM  = P.BRK_RELRPM:get()
+    cfg.BRK_HOLDMS  = P.BRK_HOLDMS:get()
+    cfg.BRK_DBLPCT  = P.BRK_DBLPCT:get()
+    cfg.BRK_DBLMS   = P.BRK_DBLMS:get()
+    cfg.BRK_AADELAY = P.BRK_AADELAY:get()
+    cfg.BRK_AASTEP  = P.BRK_AASTEP:get()
+    cfg.BRK_AAPRD   = P.BRK_AAPRD:get()
+    cfg.BRK_SBYMS   = P.BRK_SBYMS:get()
 
-    cfg.FS_DLYMS   = P_FS_DLYMS:get()
-    cfg.FS_THRPWM  = P_FS_THRPWM:get()
-    cfg.FS_BRKFRC  = P_FS_BRKFRC:get()
+    cfg.FS_DLYMS   = P.FS_DLYMS:get()
+    cfg.FS_THRPWM  = P.FS_THRPWM:get()
+    cfg.FS_BRKFRC  = P.FS_BRKFRC:get()
 
-    cfg.STR_DLMXANG = P_STR_DLMXANG:get()
+    cfg.STR_DLMXANG = P.STR_DLMXANG:get()
 
-    cfg.DL_WORKT = P_DL_WORKT:get()
+    cfg.DL_WORKT = P.DL_WORKT:get()
 end
 
 local function gear_pwm(gear)
@@ -327,14 +335,18 @@ local can_state = {
     ts_342         = 0,
 }
 
-local ID_PEDAL      = uint32_t(0x103)
-local ID_GEAR       = uint32_t(0x309)
-local ID_DRIVEMODE  = uint32_t(0x400)
-local ID_SHAFTLOCK2 = uint32_t(0x121)
-local ID_RPM        = uint32_t(0x102)
-local ID_SPEED      = uint32_t(0x231)
-local ID_FUEL       = uint32_t(0x530)
-local ID_FUELFAULT  = uint32_t(0x342)
+-- one table, not 8 locals -- see the P table comment above re: the 100-local
+-- main-chunk limit
+local CAN_ID = {
+    PEDAL      = uint32_t(0x103),
+    GEAR       = uint32_t(0x309),
+    DRIVEMODE  = uint32_t(0x400),
+    SHAFTLOCK2 = uint32_t(0x121),
+    RPM        = uint32_t(0x102),
+    SPEED      = uint32_t(0x231),
+    FUEL       = uint32_t(0x530),
+    FUELFAULT  = uint32_t(0x342),
+}
 
 local GEAR_MAP = {
     [0xC0] = "P",
@@ -423,20 +435,22 @@ local KNOWN_IDS = {
     { id = 0x530, name = "fuel(0x530)" },
     { id = 0x342, name = "fuelfault(0x342)" },
 }
-local can_seen_ids     = {}
-local can_unseen_count = #KNOWN_IDS
-
-local can_total_frames    = 0
-local can_last_summary_ms = 0
-local can_last_nodata_ms  = 0
+-- one table, not 5 locals -- see the P table comment re: the 100-local limit
+local can_dbg = {
+    seen_ids        = {},
+    unseen_count    = #KNOWN_IDS,
+    total_frames    = 0,
+    last_summary_ms = 0,
+    last_nodata_ms  = 0,
+}
 
 local function can_note_first_seen(frame)
-    if can_unseen_count == 0 then return end
+    if can_dbg.unseen_count == 0 then return end
     local id_num = frame:id():toint()
     for _, k in ipairs(KNOWN_IDS) do
-        if k.id == id_num and not can_seen_ids[k.id] then
-            can_seen_ids[k.id] = true
-            can_unseen_count = can_unseen_count - 1
+        if k.id == id_num and not can_dbg.seen_ids[k.id] then
+            can_dbg.seen_ids[k.id] = true
+            can_dbg.unseen_count = can_dbg.unseen_count - 1
             log(SEV_INFO, "CAN first frame seen: " .. k.name)
             break
         end
@@ -452,40 +466,40 @@ local function can_update(now)
         local frame = can_driver:read_frame()
         if not frame then break end
 
-        can_total_frames = can_total_frames + 1
+        can_dbg.total_frames = can_dbg.total_frames + 1
         can_note_first_seen(frame)
 
         local id = uint32_t(frame:id())
-        if id == ID_PEDAL then
+        if id == CAN_ID.PEDAL then
             handle_pedal(frame, now)
-        elseif id == ID_GEAR then
+        elseif id == CAN_ID.GEAR then
             handle_gear(frame, now)
-        elseif id == ID_SHAFTLOCK2 then
+        elseif id == CAN_ID.SHAFTLOCK2 then
             handle_shaftlock2(frame, now)
-        elseif id == ID_DRIVEMODE then
+        elseif id == CAN_ID.DRIVEMODE then
             handle_drivemode(frame, now)
-        elseif id == ID_RPM then
+        elseif id == CAN_ID.RPM then
             handle_rpm(frame, now)
-        elseif id == ID_SPEED then
+        elseif id == CAN_ID.SPEED then
             handle_speed(frame, now)
-        elseif id == ID_FUEL then
+        elseif id == CAN_ID.FUEL then
             handle_fuel(frame, now)
-        elseif id == ID_FUELFAULT then
+        elseif id == CAN_ID.FUELFAULT then
             handle_fuelfault(frame, now)
         end
     end
 
-    if can_total_frames == 0 then
-        if now - can_last_nodata_ms > 5000 then
+    if can_dbg.total_frames == 0 then
+        if now - can_dbg.last_nodata_ms > 5000 then
             log(SEV_WARN, "no CAN frames received yet - check wiring/CAN_Dx_PROTOCOL/bitrate")
-            can_last_nodata_ms = now
+            can_dbg.last_nodata_ms = now
         end
     elseif cfg.CANDBG ~= 0 then
-        if now - can_last_summary_ms > cfg.CANDBG_MS then
-            can_last_summary_ms = now
+        if now - can_dbg.last_summary_ms > cfg.CANDBG_MS then
+            can_dbg.last_summary_ms = now
             log(SEV_INFO, string.format(
                 "CAN frames=%d gear=%s(%s) spd=%.1f rpm=%.0f temp=%dC pedal=%.0f%% batt=%.1fV",
-                can_total_frames,
+                can_dbg.total_frames,
                 can_state.gear,
                 can_state.gear_valid and "ok" or "inv",
                 can_state.speed_kmh,
@@ -574,7 +588,7 @@ local function cal_finish()
             log(SEV_WARN, string.format("Gear cal: %s NOT seen during sweep", g))
         end
     end
-    P_CAL_RUN:set_and_save(0)
+    P.CAL_RUN:set_and_save(0)
     cal_active = false
 end
 
