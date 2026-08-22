@@ -20,23 +20,35 @@
 -- below it, via the SERVO2_MIN=SERVO2_TRIM clamp), ramping to 100% above it.
 --
 -- This script does NOT compute the gas PWM. It only:
---   1) forces SERVO2 (gas) to idle when the CAN-confirmed gear is not R/L/H
---      (the accelerator must physically do nothing in P/N or while the gear
---      state is unknown/stale) — same technique as neutralize_throttle() in
---      JRVS_MamontUGV.lua: override only to force a safe state, otherwise
---      leave the channel alone so ArduPilot's native output shows through.
---   2) drives the brake actuator proportionally from the raw CH1 stick
---      position below the idle zone (brake is NOT part of ArduPilot's motor
---      library — plain scripting output).
---   3) drives the P/N/R/L/H gear-selector actuator from CH_GEAR, gated by a
---      safety interlock: a gear change is only applied while CH1 is in the
---      idle zone AND CAN-reported speed (0x231) is ~0.
+--   1) forces SERVO2 (gas) to idle when the CAN-confirmed gear is not R/L/H,
+--      a gear shift is in flight, or the own-timer failsafe is active — same
+--      technique as neutralize_throttle() in JRVS_MamontUGV.lua: override
+--      only to force a safe state, otherwise leave the channel alone so
+--      ArduPilot's native output shows through.
+--   2) drives the brake actuator from several independent demand sources
+--      (manual stick, gearshift-wait auto-brake, handbrake, hill-hold
+--      auto-apply, failsafe) and outputs the max of them, with a standby
+--      timer that drops PWM to literal 0 (servo board sleep) once the
+--      vehicle is confirmed stationary and no longer needs holding force.
+--   3) drives the P/N/R/L/H gear-selector actuator from CH_GEAR through a
+--      state machine: wait-for-safe-speed/rpm (with auto-brake assist) ->
+--      command sent + throttle locked -> CAN-confirmed or timed out ->
+--      (if target is P) settle pause -> handbrake engaged; plus a hard
+--      protect-timeout that stops driving the actuator if it never settles
+--      (stuck gearbox), so the servo doesn't keep pulling stall current.
+--   4) engages/auto-releases the front diff-lock relay from CH_DIFLOCK, with
+--      a hard 0/1-hot interlock (not allowed while in gear H) and a
+--      countdown auto-disable, reported to the GCS as a NAMED_VALUE_FLOAT so
+--      an external dashboard (Maul-Docker) can show it.
 --
 -- CH_THROTTLE (RC_OVERRIDE): raw PWM read directly here for brake + interlock
 --                             decisions ONLY. The actual gas PWM is computed
 --                             by ArduPilot's native throttle mixer from the
 --                             same physical channel (RCMAP_THROTTLE=1).
 -- CH_GEAR     (RC_OVERRIDE): 5 zones -> P / N / R / L / H target
+-- CH_DIFLOCK  (RC_OVERRIDE): rising edge = operator requests front diff-lock
+-- CH_BRAKE_MANUAL (RC_OVERRIDE): dedicated manual brake, proportional over
+--                             its full range, independent of CH1/gear/CAN
 --
 -- CAN: passive listener only (never writes to the bus), decodes the Can-Am
 -- broadcast frames documented in debug/canam_can_map.md. Requires one CAN
@@ -57,8 +69,14 @@ local function log(sev, msg) gcs:send_text(sev, "MAUL: " .. msg) end
 -- ---------------------------------------------------------------------------
 -- RC CHANNELS
 -- ---------------------------------------------------------------------------
-local CH_THROTTLE = 1
-local CH_GEAR     = 6
+local CH_THROTTLE     = 1
+local CH_GEAR         = 6
+local CH_DIFLOCK      = 7  -- rising edge = operator requests diff-lock engage;
+                            -- CANDIDATE channel, confirm free on the real remote
+                            -- mapping before relying on it (see debug/MAUL_UGV_README.md)
+local CH_BRAKE_MANUAL = 4  -- dedicated manual brake override, full range
+                            -- 1000=released..2000=fully clamped, independent
+                            -- of CH1 -- CANDIDATE channel, confirm free
 
 -- ---------------------------------------------------------------------------
 -- SERVO OUTPUTS (0-based channel index)
@@ -78,12 +96,23 @@ local STEER_FUNC = 26 -- k_steering, for SRV_Channels:get_output_pwm()
 
 local GAS_IDLE_PWM = 1500
 
+-- Front diff-lock cutoff relay (physically in series with the operator's
+-- tumbler line -- relay OFF = line broken = lock request cannot reach the
+-- vehicle regardless of switch position). 0-based instance, see
+-- AP_Scripting relay:on()/relay:off() -- RELAY1_PIN_DEFAULT on this board.
+local DIFLOCK_RELAY = 0
+local DIFLOCK_ON_THRESH = 1700
+
+-- Brake-stick "full down" tolerance for handbrake-hold detection (raw CH1 is
+-- 1000 at the very bottom of travel).
+local BRAKE_FULL_DOWN_PWM = 1010
+
 -- ---------------------------------------------------------------------------
 -- CUSTOM PARAMETERS (table key 73, prefix MAUL_)
 -- ---------------------------------------------------------------------------
 local PARAM_TABLE_KEY    = 73
 local PARAM_TABLE_PREFIX = "MAUL_"
-assert(param:add_table(PARAM_TABLE_KEY, PARAM_TABLE_PREFIX, 19), "MAUL: add_table failed")
+assert(param:add_table(PARAM_TABLE_KEY, PARAM_TABLE_PREFIX, 40), "MAUL: add_table failed")
 
 local function add_param(idx, name, default)
     assert(param:add_param(PARAM_TABLE_KEY, idx, name, default), "MAUL: add_param " .. name)
@@ -103,11 +132,11 @@ local P_BRK_MIN  = add_param(6,  'BRK_MIN',    1000)  -- brake released
 local P_BRK_MAX  = add_param(7,  'BRK_MAX',    2000)  -- brake fully squeezed
 local P_THR_DZLO = add_param(8,  'THR_DZ_LO',  1470)  -- idle zone low bound (raw CH1)
 local P_THR_DZHI = add_param(9,  'THR_DZ_HI',  1530)  -- idle zone high bound (raw CH1) -- keep in sync with RC1_TRIM +/- RC1_DZ!
-local P_GEAR_SPD = add_param(10, 'GEAR_SPD_MX',  0.3) -- max CAN speed (km/h) to allow gear change
+local P_GEAR_SPD = add_param(10, 'GEAR_SPD_MX',  4)   -- GearShift_SafeSpeed (km/h): below this AND GEAR_SAFRPM, a shift may proceed
 local P_CAN_TOMS = add_param(11, 'CAN_TIMEOUT', 200)  -- CAN feedback staleness timeout (ms)
 
--- Speed-based steering attenuation. Disabled by default (0) until bench/road
--- tested -- see debug/MAUL_UGV_README.md.
+-- Speed-based steering attenuation ("progressive steering" per client spec).
+-- Disabled by default (0) until bench/road tested -- see debug/MAUL_UGV_README.md.
 local P_STR_ATT_EN  = add_param(12, 'STR_ATT_EN',   0)   -- 0=disabled, 1=enabled
 local P_STR_SPD_MAX = add_param(13, 'STR_SPD_MAX', 50)   -- km/h at which gain reaches STR_MIN_GAIN
 local P_STR_MINGAIN = add_param(14, 'STR_MIN_GAIN', 0.3) -- steering gain (0-1) at/above STR_SPD_MAX
@@ -124,6 +153,36 @@ local P_CAL_STEPMS  = add_param(17, 'CAL_STEP_MS', 200)  -- ms between steps (le
 -- Bring-up CAN debug logging (see header comment).
 local P_CANDBG     = add_param(18, 'CANDBG',     1)     -- 0=off, 1=periodic decoded summary in GCS messages
 local P_CANDBG_MS  = add_param(19, 'CANDBG_MS', 2000)   -- ms between summary logs when CANDBG=1
+
+-- --- Gearbox mode logic ---
+local P_GEAR_SAFRPM = add_param(20, 'GEAR_SAFRPM', 1900)  -- GearShift_SafeRPM
+local P_GEAR_MAXT   = add_param(21, 'GEAR_MAXT',   4500)  -- GearShift_MaxTime (ms): expected actuator travel time + 15%
+local P_GEAR_TOUT   = add_param(22, 'GEAR_TOUT',  15000)  -- GearShift_Timeout (ms), added on top of GEAR_MAXT before protect-cutoff
+
+-- --- Brake mode logic ---
+local P_BRK_AAPFRC  = add_param(23, 'BRK_AAPFRC',   40)   -- Brakes_AutoApply_Force (%)
+local P_BRK_HANDFRC = add_param(24, 'BRK_HANDFRC', 100)   -- Brakes_Handbrake_Force (%)
+local P_BRK_RELRPM  = add_param(25, 'BRK_RELRPM',  1950)  -- Brakes_Auto_Release_RPM
+local P_BRK_HOLDMS  = add_param(26, 'BRK_HOLDMS',  3000)  -- stick held full-down duration to engage handbrake (ms)
+local P_BRK_DBLPCT  = add_param(27, 'BRK_DBLPCT',    95)  -- stick travel %% for a "click" of the double-press release
+local P_BRK_DBLMS   = add_param(28, 'BRK_DBLMS',    600)  -- max gap between the two clicks (ms)
+local P_BRK_AADELAY = add_param(29, 'BRK_AADELAY', 5000)  -- Brakes_AutoApply_Delay (ms) -- PLACEHOLDER, client TZ gave no number, confirm
+local P_BRK_AASTEP  = add_param(30, 'BRK_AASTEP',    10)  -- hill-hold escalation step (%)
+local P_BRK_AAPRD   = add_param(31, 'BRK_AAPRD',   1000)  -- hill-hold escalation period (ms)
+local P_BRK_SBYMS   = add_param(32, 'BRK_SBYMS',  20000)  -- Brakes_Standby_Delay (ms) before PWM=0 sleep
+
+-- --- Failsafe (own timer, independent of native FS_TIMEOUT/FS_ACTION -- see
+-- debug/MAUL_UGV_README.md; this one gates the scripting-owned brake/gear/gas
+-- actuators that the native RC failsafe path doesn't touch) ---
+local P_FS_DLYMS   = add_param(33, 'FS_DLYMS',  800)   -- FS_Delay_time (ms)
+local P_FS_THRPWM  = add_param(34, 'FS_THRPWM', 1500)  -- FS_Throttle_PWM
+local P_FS_BRKFRC  = add_param(35, 'FS_BRKFRC',   70)  -- FS_Brake_force (%)
+
+-- --- Steering: diff-lock max angle clamp ---
+local P_STR_DLMXANG = add_param(36, 'STR_DLMXANG', 100)  -- max PWM deviation from SERVO1_TRIM while diff-lock active -- UNCALIBRATED placeholder
+
+-- --- Front diff-lock timer ---
+local P_DL_WORKT = add_param(37, 'DL_WORKT', 180)  -- DifLock_Work_Time (s)
 
 local cfg = {}
 local function refresh_cfg()
@@ -146,6 +205,29 @@ local function refresh_cfg()
     cfg.CAL_STEP_MS = P_CAL_STEPMS:get()
     cfg.CANDBG      = P_CANDBG:get()
     cfg.CANDBG_MS   = P_CANDBG_MS:get()
+
+    cfg.GEAR_SAFRPM = P_GEAR_SAFRPM:get()
+    cfg.GEAR_MAXT   = P_GEAR_MAXT:get()
+    cfg.GEAR_TOUT   = P_GEAR_TOUT:get()
+
+    cfg.BRK_AAPFRC  = P_BRK_AAPFRC:get()
+    cfg.BRK_HANDFRC = P_BRK_HANDFRC:get()
+    cfg.BRK_RELRPM  = P_BRK_RELRPM:get()
+    cfg.BRK_HOLDMS  = P_BRK_HOLDMS:get()
+    cfg.BRK_DBLPCT  = P_BRK_DBLPCT:get()
+    cfg.BRK_DBLMS   = P_BRK_DBLMS:get()
+    cfg.BRK_AADELAY = P_BRK_AADELAY:get()
+    cfg.BRK_AASTEP  = P_BRK_AASTEP:get()
+    cfg.BRK_AAPRD   = P_BRK_AAPRD:get()
+    cfg.BRK_SBYMS   = P_BRK_SBYMS:get()
+
+    cfg.FS_DLYMS   = P_FS_DLYMS:get()
+    cfg.FS_THRPWM  = P_FS_THRPWM:get()
+    cfg.FS_BRKFRC  = P_FS_BRKFRC:get()
+
+    cfg.STR_DLMXANG = P_STR_DLMXANG:get()
+
+    cfg.DL_WORKT = P_DL_WORKT:get()
 end
 
 local function gear_pwm(gear)
@@ -184,6 +266,18 @@ local function map(x, in_lo, in_hi, out_lo, out_hi)
     return out_lo + t * (out_hi - out_lo)
 end
 
+local function clamp(x, lo, hi)
+    if x < lo then return lo end
+    if x > hi then return hi end
+    return x
+end
+
+-- Percent (0-100) of full brake travel -> PWM, same scale the manual stick
+-- mapping already uses.
+local function pct_to_brake_pwm(pct)
+    return cfg.BRK_MIN + (cfg.BRK_MAX - cfg.BRK_MIN) * (pct / 100.0)
+end
+
 -- Steering gain at a given speed: 1.0 at 0 km/h, linearly down to
 -- cfg.STR_MIN_GAIN at/above cfg.STR_SPD_MAX.
 local function steering_gain(speed_kmh)
@@ -217,6 +311,7 @@ local can_state = {
     ts_231         = 0,
 
     rpm            = 0,
+    engine_temp_c  = 0,
     engine_load    = 0,
     ts_102         = 0,
 
@@ -287,8 +382,12 @@ local function handle_drivemode(frame, now)
     can_state.ts_400    = now
 end
 
+-- 0x102: RPM = (B0<<8|B1) x 0.25, engine temp = B3-60 degC -- fixed against
+-- debug/canam_can_map_v2.md (spec-confirmed; v1's B2-3 raw-count read was
+-- wrong, kept giving a plausible-looking but incorrect number).
 local function handle_rpm(frame, now)
-    can_state.rpm         = (frame:data(2) << 8) | frame:data(3)
+    can_state.rpm         = ((frame:data(0) << 8) | frame:data(1)) * 0.25
+    can_state.engine_temp_c = frame:data(3) - 60
     can_state.engine_load = frame:data(5)
     can_state.ts_102      = now
 end
@@ -385,12 +484,13 @@ local function can_update(now)
         if now - can_last_summary_ms > cfg.CANDBG_MS then
             can_last_summary_ms = now
             log(SEV_INFO, string.format(
-                "CAN frames=%d gear=%s(%s) spd=%.1f rpm=%d pedal=%.0f%% batt=%.1fV",
+                "CAN frames=%d gear=%s(%s) spd=%.1f rpm=%.0f temp=%dC pedal=%.0f%% batt=%.1fV",
                 can_total_frames,
                 can_state.gear,
                 can_state.gear_valid and "ok" or "inv",
                 can_state.speed_kmh,
                 can_state.rpm,
+                can_state.engine_temp_c,
                 can_state.pedal_pct,
                 can_state.batt_voltage))
         end
@@ -405,6 +505,40 @@ local commanded_gear      = "P"     -- last gear actually applied to the actuato
 local commanded_gear_pwm  = 1500    -- set from cfg.P_SVO on init
 local last_warn_ms        = 0
 local steer_trim_pwm      = 1500    -- read from SERVO1_TRIM on init
+
+-- Gear-shift state machine (section A)
+local gear_wait_safe          = false  -- waiting for safe speed/rpm before commanding the actuator
+local gear_wait_target        = "P"
+local gear_cmd_pending        = false  -- actuator commanded, not yet confirmed/timed out -- throttle locked
+local gear_cmd_start_ms       = 0
+local gear_park_wait          = false  -- gear settled on P, waiting extra GEAR_MAXT before handbrake
+local gear_park_wait_start_ms = 0
+
+-- Brakes (section B)
+local handbrake_engaged     = false
+local brake_hold_start_ms   = 0    -- 0 = stick not currently full-down
+local brake_click_prev      = false
+local brake_click1_ms       = 0    -- 0 = no pending first click of a double-press
+local hillhold_active       = false
+local hillhold_pwm_pct      = 0
+local hillhold_last_step_ms = 0
+local hillhold_timer_start_ms = 0
+local hillhold_last_gear    = "UNKNOWN"
+local standby_deadline_ms   = math.huge  -- never sleep until the first real auto-clamp event
+
+-- Failsafe (section C) -- own timer, independent of native FS_TIMEOUT/FS_ACTION
+local link_lost_start_ms = 0  -- 0 = link currently valid
+local failsafe_active    = false
+
+-- Front diff-lock (section E)
+local difflock_active      = false
+local difflock_deadline_ms = 0
+local difflock_ch_prev     = false
+
+-- Mode-status telemetry (MAUL_DL/MAUL_ST NAMED_VALUE_FLOAT, section F -- read
+-- by Maul-Docker so the dashboard can show gearshift/brake/failsafe state,
+-- not just raw CAN)
+local status_tlm_last_ms = 0
 
 local function warn_throttled(msg)
     local now = millis()
@@ -474,6 +608,28 @@ local function calibration_tick(now)
 end
 
 -- ---------------------------------------------------------------------------
+-- GEAR STATE MACHINE HELPER (section A)
+-- ---------------------------------------------------------------------------
+local function start_gear_shift(gear, now)
+    commanded_gear     = gear
+    commanded_gear_pwm = gear_pwm(gear)
+    gear_cmd_pending    = true
+    gear_cmd_start_ms   = now
+    log(SEV_INFO, string.format("Gear -> %s (pwm=%d)", gear, commanded_gear_pwm))
+end
+
+-- Releases handbrake/hill-hold, gated by "never while confirmed in P".
+local function release_brakes(confirmed_gear, reason)
+    if confirmed_gear == "P" then return end
+    if handbrake_engaged or hillhold_active then
+        handbrake_engaged = false
+        hillhold_active   = false
+        hillhold_pwm_pct  = 0
+        log(SEV_INFO, "Brakes released (" .. reason .. ")")
+    end
+end
+
+-- ---------------------------------------------------------------------------
 -- MAIN LOOP
 -- ---------------------------------------------------------------------------
 local function update()
@@ -482,28 +638,50 @@ local function update()
 
     can_update(now)
 
+    -- own failsafe timer -- separate from native FS_TIMEOUT/FS_ACTION, which
+    -- still runs independently and covers what this script doesn't (mode
+    -- changes etc). This one gates the scripting-owned gas/brake/gear outputs.
     if not rc:has_valid_input() then
-        -- fail safe: force gas idle (on top of ArduPilot's own RC failsafe),
-        -- full brake, hold last commanded gear
-        SRV_Channels:set_output_pwm_chan_timeout(GAS_CHAN,   GAS_IDLE_PWM, OUT_TIMEOUT_MS)
-        SRV_Channels:set_output_pwm_chan_timeout(BRAKE_CHAN, cfg.BRK_MAX,  OUT_TIMEOUT_MS)
-        SRV_Channels:set_output_pwm_chan_timeout(GEAR_CHAN,  commanded_gear_pwm, OUT_TIMEOUT_MS)
-        return update, 10
+        if link_lost_start_ms == 0 then link_lost_start_ms = now end
+    else
+        link_lost_start_ms = 0
+        failsafe_active     = false
+    end
+    if link_lost_start_ms ~= 0 and (now - link_lost_start_ms >= cfg.FS_DLYMS) then
+        failsafe_active = true
     end
 
-    local v1    = rc_pwm(CH_THROTTLE, cfg.THR_DZ_LO)  -- default: idle
-    local vgear = rc_pwm(CH_GEAR, 1000)                -- default: P zone
+    local v1        = rc_pwm(CH_THROTTLE, cfg.THR_DZ_LO)  -- default: idle
+    local vgear      = rc_pwm(CH_GEAR, 1000)               -- default: P zone
+    local vdiflock   = rc_pwm(CH_DIFLOCK, 1000)
+    local v_brk_man  = rc_pwm(CH_BRAKE_MANUAL, 1000)       -- default: released
 
     target_gear = target_gear_from_pwm(vgear)
 
     local can_gear_fresh  = (now - can_state.ts_309 < cfg.CAN_TIMEOUT)
     local can_speed_fresh = (now - can_state.ts_231 < cfg.CAN_TIMEOUT)
+    local can_rpm_fresh   = (now - can_state.ts_102 < cfg.CAN_TIMEOUT)
     local confirmed_gear  = (can_gear_fresh and can_state.gear_valid) and can_state.gear or "UNKNOWN"
-    local speed_ok         = can_speed_fresh and (can_state.speed_kmh < cfg.GEAR_SPD_MX)
 
     local thr_neutral = (v1 >= cfg.THR_DZ_LO) and (v1 <= cfg.THR_DZ_HI)
-    local interlock_ok = thr_neutral and speed_ok
 
+    -- CAN gives the precise speed/rpm check when it's actually alive. If
+    -- either signal is stale, speed_ok/rpm_ok can't be evaluated against a
+    -- real number -- default them to "ok" (not blocking) rather than "not
+    -- ok forever", and gate on can_full_telemetry below to decide whether we
+    -- trust that or fall back to a proxy. Without this, a dead/disconnected
+    -- CAN tap (a reverse-engineered aftermarket tap, not vehicle-original --
+    -- more likely to fail than the vehicle bus itself) would permanently
+    -- wedge gear_wait_safe true and hold the gearshift-wait auto-brake on
+    -- forever, i.e. the gearbox could never shift again until CAN came back.
+    local can_full_telemetry = can_speed_fresh and can_rpm_fresh
+    local speed_ok = (not can_speed_fresh) or (can_state.speed_kmh < cfg.GEAR_SPD_MX)
+    local rpm_ok    = (not can_rpm_fresh) or (can_state.rpm < cfg.GEAR_SAFRPM)
+    local safe_to_shift = speed_ok and rpm_ok
+
+    -- =========================================================================
+    -- A. GEARBOX STATE MACHINE
+    -- =========================================================================
     if cfg.CAL_RUN ~= 0 then
         -- bench calibration sweep owns GEAR_CHAN this tick; normal gear
         -- command/interlock logic is skipped entirely.
@@ -511,55 +689,288 @@ local function update()
     else
         if cal_active then cal_active = false end -- param was reset to 0 mid-sweep
 
-        -- gear command: only act on a NEW target while the interlock is satisfied
-        if target_gear ~= commanded_gear then
-            if interlock_ok then
-                commanded_gear     = target_gear
-                commanded_gear_pwm = gear_pwm(commanded_gear)
-                log(SEV_INFO, string.format("Gear -> %s (pwm=%d)", commanded_gear, commanded_gear_pwm))
-            else
-                warn_throttled(string.format(
-                    "Gear change to %s blocked (thr_neutral=%s speed_ok=%s)",
-                    target_gear, tostring(thr_neutral), tostring(speed_ok)))
+        if not failsafe_active then
+            if target_gear ~= commanded_gear and not gear_cmd_pending and not gear_wait_safe then
+                if can_full_telemetry then
+                    -- normal path: precise speed/rpm gate, with auto-brake
+                    -- assist (gear_wait_safe below) if not currently safe
+                    if safe_to_shift then
+                        start_gear_shift(target_gear, now)
+                    else
+                        gear_wait_safe   = true
+                        gear_wait_target = target_gear
+                        warn_throttled(string.format(
+                            "Gear -> %s waiting for safe speed/rpm (spd_ok=%s rpm_ok=%s)",
+                            target_gear, tostring(speed_ok), tostring(rpm_ok)))
+                    end
+                elseif thr_neutral then
+                    -- CAN unavailable: no auto-brake (we have no real speed
+                    -- to wait on -- braking blind would be presumptuous),
+                    -- fall back to the one always-available proxy for "not
+                    -- asking to accelerate": throttle stick in the idle zone.
+                    start_gear_shift(target_gear, now)
+                else
+                    warn_throttled(string.format(
+                        "Gear -> %s blocked: no CAN telemetry, release throttle to shift",
+                        target_gear))
+                end
+            end
+
+            if gear_wait_safe then
+                if target_gear ~= gear_wait_target then
+                    gear_wait_target = target_gear -- operator changed their mind while waiting
+                end
+                if can_full_telemetry then
+                    if safe_to_shift then
+                        gear_wait_safe = false
+                        start_gear_shift(gear_wait_target, now)
+                    end
+                elseif thr_neutral then
+                    -- CAN died mid-wait -- stop guessing at a speed we can no
+                    -- longer measure, drop back to the throttle-neutral gate
+                    gear_wait_safe = false
+                    start_gear_shift(gear_wait_target, now)
+                end
+            end
+        end
+
+        if gear_cmd_pending then
+            local shift_confirmed = can_gear_fresh and can_state.gear_valid and can_state.gear == commanded_gear
+            if shift_confirmed or (now - gear_cmd_start_ms > cfg.GEAR_MAXT) then
+                gear_cmd_pending = false
+                if commanded_gear == "P" then
+                    gear_park_wait          = true
+                    gear_park_wait_start_ms = now
+                end
+            end
+        end
+
+        if gear_park_wait and (now - gear_park_wait_start_ms > cfg.GEAR_MAXT) then
+            gear_park_wait = false
+            if not handbrake_engaged then
+                handbrake_engaged   = true
+                standby_deadline_ms = now + cfg.BRK_SBYMS
+                log(SEV_INFO, "Parking: handbrake engaged")
             end
         end
     end
 
-    -- brake: proportional below the idle zone, released elsewhere. Purely a
-    -- function of the raw stick, independent of ArduPilot's own RC1 scaling.
-    local brake_pwm
-    if v1 < cfg.THR_DZ_LO then
-        brake_pwm = map(v1, cfg.THR_DZ_LO, 1000, cfg.BRK_MIN, cfg.BRK_MAX)
+    -- =========================================================================
+    -- B. BRAKES -- independent demand sources, output the max, standby sleep
+    -- =========================================================================
+    local manual_pwm
+    local manual_pressed = v1 < cfg.THR_DZ_LO
+    if manual_pressed then
+        manual_pwm = map(v1, cfg.THR_DZ_LO, 1000, cfg.BRK_MIN, cfg.BRK_MAX)
     else
-        brake_pwm = cfg.BRK_MIN
+        manual_pwm = cfg.BRK_MIN
     end
 
-    -- gas: only ever an override to force idle. When allowed, this script
-    -- does not touch SERVO2 at all -- ArduPilot's native throttle mixer
-    -- (RC1_TRIM/RC1_DZ, see README) already produces 0 output for any stick
-    -- position at/below the idle zone and scales up into gas above it.
-    local gas_allowed = (confirmed_gear == "R") or (confirmed_gear == "L") or (confirmed_gear == "H")
-    if not gas_allowed then
+    -- dedicated manual brake override (CH_BRAKE_MANUAL) -- independent of
+    -- CH1/gear/CAN entirely, proportional across the channel's full range so
+    -- it works whether it's wired to a switch (effectively on/off) or a
+    -- lever. Always live, no latching/state-machine -- releases the instant
+    -- the channel drops back to idle, same as the CH1 manual brake.
+    local override_pressed = v_brk_man > 1010
+    local override_pwm = override_pressed and map(v_brk_man, 1000, 2000, cfg.BRK_MIN, cfg.BRK_MAX) or 0
+
+    -- handbrake engage: stick held full-down continuously for BRK_HOLDMS
+    local full_down = v1 <= BRAKE_FULL_DOWN_PWM
+    if full_down then
+        if brake_hold_start_ms == 0 then brake_hold_start_ms = now end
+        if not handbrake_engaged and (now - brake_hold_start_ms) >= cfg.BRK_HOLDMS then
+            handbrake_engaged    = true
+            standby_deadline_ms  = now + cfg.BRK_SBYMS
+            log(SEV_INFO, "Handbrake engaged (stick hold)")
+        end
+    else
+        brake_hold_start_ms = 0
+    end
+
+    -- double-click release: two "stick crossed BRK_DBLPCT%% down" edges
+    -- within BRK_DBLMS of each other
+    local dbl_thresh_pwm = cfg.THR_DZ_LO - (cfg.THR_DZ_LO - 1000) * (cfg.BRK_DBLPCT / 100.0)
+    local click_active   = v1 <= dbl_thresh_pwm
+    if click_active and not brake_click_prev then
+        if brake_click1_ms ~= 0 and (now - brake_click1_ms) <= cfg.BRK_DBLMS then
+            release_brakes(confirmed_gear, "double-click")
+            brake_click1_ms = 0
+        else
+            brake_click1_ms = now
+        end
+    end
+    if brake_click1_ms ~= 0 and (now - brake_click1_ms) > cfg.BRK_DBLMS then
+        brake_click1_ms = 0
+    end
+    brake_click_prev = click_active
+
+    -- deliberate throttle (rpm above release threshold) releases handbrake /
+    -- hill-hold, and also cancels a pending hill-hold auto-apply delay
+    local deliberate_rpm = can_rpm_fresh and can_state.rpm >= cfg.BRK_RELRPM
+    if deliberate_rpm then
+        release_brakes(confirmed_gear, "rpm")
+    end
+
+    -- hill-hold: if no deliberate throttle within BRK_AADELAY of a (non-P)
+    -- gear being confirmed, auto-apply and escalate while still rolling
+    if confirmed_gear ~= hillhold_last_gear then
+        hillhold_last_gear     = confirmed_gear
+        hillhold_timer_start_ms = now
+    end
+    if deliberate_rpm then
+        hillhold_timer_start_ms = now
+    end
+    if (not hillhold_active) and (not handbrake_engaged)
+        and confirmed_gear ~= "P" and confirmed_gear ~= "UNKNOWN" and confirmed_gear ~= "INVALID"
+        and (now - hillhold_timer_start_ms) >= cfg.BRK_AADELAY then
+        hillhold_active       = true
+        hillhold_pwm_pct      = cfg.BRK_AAPFRC
+        hillhold_last_step_ms = now
+        standby_deadline_ms   = now + cfg.BRK_SBYMS
+        log(SEV_WARN, "Auto-brake: no throttle after gear engage")
+    end
+    if hillhold_active and can_speed_fresh and can_state.speed_kmh > 0
+        and (now - hillhold_last_step_ms) >= cfg.BRK_AAPRD then
+        hillhold_pwm_pct      = math.min(hillhold_pwm_pct + cfg.BRK_AASTEP, 100)
+        hillhold_last_step_ms = now
+        standby_deadline_ms   = now + cfg.BRK_SBYMS
+    end
+
+    -- gearshift-wait auto-brake (section A.1)
+    local gearwait_pwm = gear_wait_safe and pct_to_brake_pwm(cfg.BRK_AAPFRC) or 0
+
+    -- failsafe brake (section C) -- full force while moving, eased to
+    -- AutoApply level once CAN confirms the vehicle actually stopped
+    local failsafe_pwm = 0
+    if failsafe_active then
+        local stopped = can_speed_fresh and can_state.speed_kmh <= 0.1
+        failsafe_pwm = pct_to_brake_pwm(stopped and cfg.BRK_AAPFRC or cfg.FS_BRKFRC)
+    end
+
+    local handbrake_src = handbrake_engaged and pct_to_brake_pwm(cfg.BRK_HANDFRC) or 0
+    local hillhold_src   = hillhold_active and pct_to_brake_pwm(hillhold_pwm_pct) or 0
+
+    local final_brake_pwm = manual_pwm
+    if override_pwm  > final_brake_pwm then final_brake_pwm = override_pwm end
+    if gearwait_pwm  > final_brake_pwm then final_brake_pwm = gearwait_pwm end
+    if handbrake_src > final_brake_pwm then final_brake_pwm = handbrake_src end
+    if hillhold_src  > final_brake_pwm then final_brake_pwm = hillhold_src end
+    if failsafe_pwm  > final_brake_pwm then final_brake_pwm = failsafe_pwm end
+
+    -- standby sleep: only for handbrake/hill-hold (per client spec), never
+    -- while the gearshift-wait or failsafe sources are active, never while
+    -- actually moving or above GearShift_SafeRPM (servo board wake latency),
+    -- and never while the operator is actively holding either manual source.
+    local speed_is_zero = can_speed_fresh and can_state.speed_kmh <= 0.05
+    local rpm_is_low     = can_rpm_fresh and can_state.rpm < cfg.GEAR_SAFRPM
+    local sleep_ok = (not failsafe_active) and (not gear_wait_safe)
+        and (not manual_pressed) and (not override_pressed) and speed_is_zero and rpm_is_low
+        and (now > standby_deadline_ms)
+
+    local brake_out_pwm = sleep_ok and 0 or math.floor(final_brake_pwm)
+
+    -- =========================================================================
+    -- GAS: only ever an override to force idle/failsafe. When allowed, this
+    -- script does not touch SERVO2 at all -- ArduPilot's native throttle
+    -- mixer already produces 0 output for any stick at/below the idle zone.
+    --
+    -- Gate is CAN-confirmed gear when CAN gear feedback (0x309) is fresh --
+    -- the strongest guarantee, independent proof the gearbox really is in
+    -- R/L/H. If it's stale, fall back to commanded_gear (what this script
+    -- itself last told the actuator to do): gear_cmd_pending already being
+    -- false here means that command either got CAN-confirmed already or hit
+    -- the GEAR_MAXT timeout, so commanded_gear is the best information this
+    -- script has left. This is a deliberate risk trade-off, not an oversight
+    -- -- without it, a dead CAN tap would let the gearbox shift (5.1.1) but
+    -- never actually let the vehicle move, which defeats the point of being
+    -- able to shift in an emergency with the CAN tap down.
+    -- =========================================================================
+    local effective_gear = can_gear_fresh and confirmed_gear or commanded_gear
+    local gas_allowed = (not failsafe_active) and (not gear_cmd_pending)
+        and (effective_gear == "R" or effective_gear == "L" or effective_gear == "H")
+    if failsafe_active then
+        SRV_Channels:set_output_pwm_chan_timeout(GAS_CHAN, math.floor(cfg.FS_THRPWM), OUT_TIMEOUT_MS)
+    elseif not gas_allowed then
         SRV_Channels:set_output_pwm_chan_timeout(GAS_CHAN, GAS_IDLE_PWM, OUT_TIMEOUT_MS)
     end
 
-    -- speed-based steering attenuation: scale ArduPilot's own native steering
-    -- output around trim, never compute a steering value from scratch. If
-    -- speed is unknown/stale, fail safe by assuming max speed (most
-    -- attenuation) rather than assuming stopped (full authority).
-    if cfg.STR_ATT_EN ~= 0 then
+    -- =========================================================================
+    -- E. FRONT DIFF-LOCK -- RC edge-trigger, relay cutoff, auto-timeout
+    -- =========================================================================
+    local diflock_request = vdiflock >= DIFLOCK_ON_THRESH
+    if diflock_request and not difflock_ch_prev then
+        if can_gear_fresh and can_state.gear_valid and can_state.gear ~= "H" then
+            relay:on(DIFLOCK_RELAY)
+            difflock_active      = true
+            difflock_deadline_ms = now + cfg.DL_WORKT * 1000
+            log(SEV_INFO, "DifLock engaged")
+        else
+            warn_throttled("DifLock request blocked (gear H or unknown)")
+        end
+    end
+    difflock_ch_prev = diflock_request
+
+    if difflock_active and now > difflock_deadline_ms then
+        relay:off(DIFLOCK_RELAY)
+        difflock_active = false
+        log(SEV_INFO, "DifLock auto-disabled (timeout)")
+    end
+
+    -- =========================================================================
+    -- F. MODE-STATUS TELEMETRY -- consumed by Maul-Docker (mavlink_link.py)
+    -- so the dashboard can show what this script is actually doing, not just
+    -- raw CAN values. MAUL_DL is a continuous countdown (seconds, -1=idle);
+    -- MAUL_ST is a bitmask of the discrete state-machine flags.
+    -- =========================================================================
+    if now - status_tlm_last_ms >= 1000 then
+        status_tlm_last_ms = now
+        local remaining = difflock_active and ((difflock_deadline_ms - now) / 1000.0) or -1
+        gcs:send_named_float("MAUL_DL", remaining)
+
+        local bits = 0
+        if gear_wait_safe    then bits = bits | 0x01 end
+        if gear_cmd_pending  then bits = bits | 0x02 end
+        if gear_park_wait    then bits = bits | 0x04 end
+        if handbrake_engaged then bits = bits | 0x08 end
+        if hillhold_active   then bits = bits | 0x10 end
+        if failsafe_active   then bits = bits | 0x20 end
+        if difflock_active   then bits = bits | 0x40 end
+        gcs:send_named_float("MAUL_ST", bits)
+    end
+
+    -- =========================================================================
+    -- D. STEERING -- speed attenuation ("progressive", opt-in) and, while
+    -- diff-lock is active, a hard max-angle clamp
+    -- =========================================================================
+    if cfg.STR_ATT_EN ~= 0 or difflock_active then
         local steer_native = SRV_Channels:get_output_pwm(STEER_FUNC)
         if steer_native then
-            local speed_for_gain = can_speed_fresh and can_state.speed_kmh or cfg.STR_SPD_MAX
-            local gain = steering_gain(speed_for_gain)
+            local gain = 1.0
+            if cfg.STR_ATT_EN ~= 0 then
+                local speed_for_gain = can_speed_fresh and can_state.speed_kmh or cfg.STR_SPD_MAX
+                gain = steering_gain(speed_for_gain)
+            end
             local steer_pwm = steer_trim_pwm + (steer_native - steer_trim_pwm) * gain
+            if difflock_active then
+                steer_pwm = clamp(steer_pwm, steer_trim_pwm - cfg.STR_DLMXANG, steer_trim_pwm + cfg.STR_DLMXANG)
+            end
             SRV_Channels:set_output_pwm_chan_timeout(STEER_CHAN, math.floor(steer_pwm), OUT_TIMEOUT_MS)
         end
     end
 
-    SRV_Channels:set_output_pwm_chan_timeout(BRAKE_CHAN, math.floor(brake_pwm), OUT_TIMEOUT_MS)
+    -- =========================================================================
+    -- OUTPUT
+    -- =========================================================================
+    SRV_Channels:set_output_pwm_chan_timeout(BRAKE_CHAN, brake_out_pwm, OUT_TIMEOUT_MS)
+
     if cfg.CAL_RUN == 0 then
-        SRV_Channels:set_output_pwm_chan_timeout(GEAR_CHAN, math.floor(commanded_gear_pwm), OUT_TIMEOUT_MS)
+        local gear_out_pwm
+        if now - gear_cmd_start_ms > (cfg.GEAR_MAXT + cfg.GEAR_TOUT) then
+            gear_out_pwm = 0  -- protect the actuator motor: stop driving it if a shift never settled
+        else
+            gear_out_pwm = commanded_gear_pwm
+        end
+        SRV_Channels:set_output_pwm_chan_timeout(GEAR_CHAN, math.floor(gear_out_pwm), OUT_TIMEOUT_MS)
     end
 
     return update, 10
@@ -572,8 +983,9 @@ local function init()
     refresh_cfg()
     commanded_gear     = "P"
     commanded_gear_pwm = cfg.P_SVO
+    gear_cmd_start_ms   = millis()  -- so the protect-timeout counts from boot, not from an unset 0
     steer_trim_pwm      = math.floor(param:get('SERVO1_TRIM') or 1500)
-    log(SEV_INFO, "MAUL_Control ready (gear params UNCALIBRATED until measured)")
+    log(SEV_INFO, "MAUL_Control ready (gear/steer-angle params UNCALIBRATED until measured)")
     return update, 500
 end
 

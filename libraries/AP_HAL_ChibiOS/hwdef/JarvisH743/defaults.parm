@@ -78,14 +78,55 @@ MAUL_BRK_MIN 1000
 MAUL_BRK_MAX 2000
 MAUL_THR_DZ_LO 1470
 MAUL_THR_DZ_HI 1530
-MAUL_GEAR_SPD_MX 0.3
+MAUL_GEAR_SPD_MX 4
 MAUL_CAN_TIMEOUT 200
 
-# Speed-based steering attenuation. Disabled (0) until bench/road tested;
-# set MAUL_STR_ATT_EN=1 to enable once happy with the feel.
+# Speed-based steering attenuation ("progressive steering" per client spec).
+# Disabled (0) until bench/road tested; set MAUL_STR_ATT_EN=1 to enable once
+# happy with the feel.
 MAUL_STR_ATT_EN 0
 MAUL_STR_SPD_MAX 50
 MAUL_STR_MIN_GAIN 0.3
+
+# --- Gearbox mode logic (client TZ: КПП) ---
+MAUL_GEAR_SAFRPM 1900
+MAUL_GEAR_MAXT 4500
+MAUL_GEAR_TOUT 15000
+
+# --- Brakes mode logic (client TZ: Гальма) ---
+MAUL_BRK_AAPFRC 40
+MAUL_BRK_HANDFRC 100
+MAUL_BRK_RELRPM 1950
+MAUL_BRK_HOLDMS 3000
+MAUL_BRK_DBLPCT 95
+MAUL_BRK_DBLMS 600
+# BRK_AADELAY: client TZ gave no concrete number for Brakes_AutoApply_Delay -
+# placeholder, confirm/tune with the client.
+MAUL_BRK_AADELAY 5000
+MAUL_BRK_AASTEP 10
+MAUL_BRK_AAPRD 1000
+MAUL_BRK_SBYMS 20000
+
+# --- Failsafe (own Lua timer, independent of native FS_TIMEOUT/FS_ACTION
+# below -- see debug/MAUL_UGV_README.md) ---
+MAUL_FS_DLYMS 800
+MAUL_FS_THRPWM 1500
+MAUL_FS_BRKFRC 70
+
+# --- Steering: diff-lock max angle clamp -- UNCALIBRATED placeholder ---
+MAUL_STR_DLMXANG 100
+
+# --- Front diff-lock relay timer (client TZ: Передній 4x4 та Diff Locker) ---
+MAUL_DL_WORKT 180
+
+# RELAY1 (RELAY1_PIN_DEFAULT=75 in hwdef.dat) = front diff-lock cutoff relay,
+# wired in series with the operator's tumbler line. FUNCTION=1 (generic
+# "Relay") makes it controllable from Lua via relay:on(0)/relay:off(0)
+# (MAUL_Control.lua, DIFLOCK_RELAY=0). DEFAULT=0 (Off) so the line starts
+# broken at boot -- diff-lock only becomes available once the operator
+# explicitly requests it through CH_DIFLOCK.
+RELAY1_FUNCTION 1
+RELAY1_DEFAULT 0
 
 # --- Can-Am OEM CAN bus: passive decode only (inside MAUL_Control.lua) on CAN2 ---
 CAN_D2_PROTOCOL 10
