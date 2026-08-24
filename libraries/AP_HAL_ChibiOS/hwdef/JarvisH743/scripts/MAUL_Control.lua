@@ -178,6 +178,7 @@ P.BRK_AADELAY = add_param(29, 'BRK_AADELAY', 5000)  -- Brakes_AutoApply_Delay (m
 P.BRK_AASTEP  = add_param(30, 'BRK_AASTEP',    10)  -- hill-hold escalation step (%)
 P.BRK_AAPRD   = add_param(31, 'BRK_AAPRD',   1000)  -- hill-hold escalation period (ms)
 P.BRK_SBYMS   = add_param(32, 'BRK_SBYMS',  20000)  -- Brakes_Standby_Delay (ms) before PWM=0 sleep
+P.BRK_GASPCT  = add_param(38, 'BRK_GASPCT',   10)   -- gas-stick %% (above idle) that also releases handbrake/hill-hold -- client-requested fallback for when CAN rpm isn't available
 
 -- --- Failsafe (own timer, independent of native FS_TIMEOUT/FS_ACTION -- see
 -- debug/MAUL_UGV_README.md; this one gates the scripting-owned brake/gear/gas
@@ -228,6 +229,7 @@ local function refresh_cfg()
     cfg.BRK_AASTEP  = P.BRK_AASTEP:get()
     cfg.BRK_AAPRD   = P.BRK_AAPRD:get()
     cfg.BRK_SBYMS   = P.BRK_SBYMS:get()
+    cfg.BRK_GASPCT  = P.BRK_GASPCT:get()
 
     cfg.FS_DLYMS   = P.FS_DLYMS:get()
     cfg.FS_THRPWM  = P.FS_THRPWM:get()
@@ -540,6 +542,13 @@ local hillhold_last_step_ms = 0
 local hillhold_timer_start_ms = 0
 local hillhold_last_gear    = "UNKNOWN"
 local standby_deadline_ms   = math.huge  -- never sleep until the first real auto-clamp event
+-- Latched, not recomputed fresh each tick: once asleep, only a confirmed-real
+-- motion reading, a live manual/override press, or a fresh auto-clamp event
+-- wakes it -- CAN merely going stale must NOT wake it (client-reported bug:
+-- previously, losing CAN while already asleep made PWM "reappear" instantly,
+-- because the old sleep_ok check required *continuously* fresh CAN showing
+-- zero speed/rpm to justify staying at PWM=0).
+local brake_asleep = false
 
 -- Failsafe (section C) -- own timer, independent of native FS_TIMEOUT/FS_ACTION
 local link_lost_start_ms = 0  -- 0 = link currently valid
@@ -633,9 +642,11 @@ local function start_gear_shift(gear, now)
     log(SEV_INFO, string.format("Gear -> %s (pwm=%d)", gear, commanded_gear_pwm))
 end
 
--- Releases handbrake/hill-hold, gated by "never while confirmed in P".
-local function release_brakes(confirmed_gear, reason)
-    if confirmed_gear == "P" then return end
+-- Releases handbrake/hill-hold, gated by "never while (believed to be) in P".
+-- Caller passes effective_gear (CAN-confirmed, or commanded_gear fallback
+-- when CAN is stale) so this still works without CAN.
+local function release_brakes(gear_belief, reason)
+    if gear_belief == "P" then return end
     if handbrake_engaged or hillhold_active then
         handbrake_engaged = false
         hillhold_active   = false
@@ -677,6 +688,15 @@ local function update()
     local can_speed_fresh = (now - can_state.ts_231 < cfg.CAN_TIMEOUT)
     local can_rpm_fresh   = (now - can_state.ts_102 < cfg.CAN_TIMEOUT)
     local confirmed_gear  = (can_gear_fresh and can_state.gear_valid) and can_state.gear or "UNKNOWN"
+
+    -- Best available belief about the current gear: CAN-confirmed when fresh
+    -- (independent proof), else fall back to commanded_gear (what this
+    -- script itself last told the actuator -- gear_cmd_pending being false
+    -- by the time this matters means that command already either got
+    -- CAN-confirmed or hit the GEAR_MAXT timeout). Used everywhere a "must
+    -- not release brakes while actually in P" check needs to still work
+    -- without CAN, per client spec -- see section B below.
+    local effective_gear = can_gear_fresh and confirmed_gear or commanded_gear
 
     local thr_neutral = (v1 >= cfg.THR_DZ_LO) and (v1 <= cfg.THR_DZ_HI)
 
@@ -765,6 +785,7 @@ local function update()
             if not handbrake_engaged then
                 handbrake_engaged   = true
                 standby_deadline_ms = now + cfg.BRK_SBYMS
+                brake_asleep        = false
                 log(SEV_INFO, "Parking: handbrake engaged")
             end
         end
@@ -796,6 +817,7 @@ local function update()
         if not handbrake_engaged and (now - brake_hold_start_ms) >= cfg.BRK_HOLDMS then
             handbrake_engaged    = true
             standby_deadline_ms  = now + cfg.BRK_SBYMS
+            brake_asleep         = false
             log(SEV_INFO, "Handbrake engaged (stick hold)")
         end
     else
@@ -808,7 +830,7 @@ local function update()
     local click_active   = v1 <= dbl_thresh_pwm
     if click_active and not brake_click_prev then
         if brake_click1_ms ~= 0 and (now - brake_click1_ms) <= cfg.BRK_DBLMS then
-            release_brakes(confirmed_gear, "double-click")
+            release_brakes(effective_gear, "double-click")
             brake_click1_ms = 0
         else
             brake_click1_ms = now
@@ -819,11 +841,18 @@ local function update()
     end
     brake_click_prev = click_active
 
-    -- deliberate throttle (rpm above release threshold) releases handbrake /
-    -- hill-hold, and also cancels a pending hill-hold auto-apply delay
-    local deliberate_rpm = can_rpm_fresh and can_state.rpm >= cfg.BRK_RELRPM
-    if deliberate_rpm then
-        release_brakes(confirmed_gear, "rpm")
+    -- deliberate movement releases handbrake/hill-hold, and cancels a
+    -- pending hill-hold auto-apply delay: rpm above the release threshold
+    -- (needs CAN), OR gas stick pushed BRK_GASPCT%% above idle (client-
+    -- requested fallback proxy for when CAN rpm isn't available -- also a
+    -- valid, slightly earlier signal even when CAN is up, so it's not
+    -- gated to the no-CAN case specifically).
+    local gas_release_pwm = cfg.THR_DZ_HI + (2000 - cfg.THR_DZ_HI) * (cfg.BRK_GASPCT / 100.0)
+    local gas_deliberate  = v1 >= gas_release_pwm
+    local deliberate_rpm  = can_rpm_fresh and can_state.rpm >= cfg.BRK_RELRPM
+    local deliberate_move = deliberate_rpm or gas_deliberate
+    if deliberate_move then
+        release_brakes(effective_gear, deliberate_rpm and "rpm" or "gas stick")
     end
 
     -- hill-hold: if no deliberate throttle within BRK_AADELAY of a (non-P)
@@ -832,7 +861,7 @@ local function update()
         hillhold_last_gear     = confirmed_gear
         hillhold_timer_start_ms = now
     end
-    if deliberate_rpm then
+    if deliberate_move then
         hillhold_timer_start_ms = now
     end
     if (not hillhold_active) and (not handbrake_engaged)
@@ -842,6 +871,7 @@ local function update()
         hillhold_pwm_pct      = cfg.BRK_AAPFRC
         hillhold_last_step_ms = now
         standby_deadline_ms   = now + cfg.BRK_SBYMS
+        brake_asleep          = false
         log(SEV_WARN, "Auto-brake: no throttle after gear engage")
     end
     if hillhold_active and can_speed_fresh and can_state.speed_kmh > 0
@@ -849,6 +879,7 @@ local function update()
         hillhold_pwm_pct      = math.min(hillhold_pwm_pct + cfg.BRK_AASTEP, 100)
         hillhold_last_step_ms = now
         standby_deadline_ms   = now + cfg.BRK_SBYMS
+        brake_asleep          = false
     end
 
     -- gearshift-wait auto-brake (section A.1)
@@ -876,31 +907,45 @@ local function update()
     -- while the gearshift-wait or failsafe sources are active, never while
     -- actually moving or above GearShift_SafeRPM (servo board wake latency),
     -- and never while the operator is actively holding either manual source.
+    --
+    -- Latched via brake_asleep (declared in STATE), not recomputed fresh
+    -- every tick -- entering sleep still requires strict, CAN-confirmed
+    -- proof of standing still (so "no CAN" correctly never enters sleep,
+    -- same as before), but once asleep, losing CAN afterwards must NOT by
+    -- itself wake it back up (client-reported bug: it used to, because
+    -- staying asleep required speed_is_zero/rpm_is_low to keep being true
+    -- every tick, and those go false the instant CAN goes stale).
     local speed_is_zero = can_speed_fresh and can_state.speed_kmh <= 0.05
     local rpm_is_low     = can_rpm_fresh and can_state.rpm < cfg.GEAR_SAFRPM
-    local sleep_ok = (not failsafe_active) and (not gear_wait_safe)
+
+    local definitely_moving = (can_speed_fresh and can_state.speed_kmh > 0.05)
+        or (can_rpm_fresh and can_state.rpm >= cfg.GEAR_SAFRPM)
+    if definitely_moving or manual_pressed or override_pressed or gear_wait_safe or failsafe_active then
+        brake_asleep = false
+    end
+
+    local can_enter_sleep = (not failsafe_active) and (not gear_wait_safe)
         and (not manual_pressed) and (not override_pressed) and speed_is_zero and rpm_is_low
         and (now > standby_deadline_ms)
+    if can_enter_sleep then
+        brake_asleep = true
+    end
 
-    local brake_out_pwm = sleep_ok and 0 or math.floor(final_brake_pwm)
+    local brake_out_pwm = brake_asleep and 0 or math.floor(final_brake_pwm)
 
     -- =========================================================================
     -- GAS: only ever an override to force idle/failsafe. When allowed, this
     -- script does not touch SERVO2 at all -- ArduPilot's native throttle
     -- mixer already produces 0 output for any stick at/below the idle zone.
     --
-    -- Gate is CAN-confirmed gear when CAN gear feedback (0x309) is fresh --
+    -- Gate is effective_gear (computed above): CAN-confirmed when fresh --
     -- the strongest guarantee, independent proof the gearbox really is in
-    -- R/L/H. If it's stale, fall back to commanded_gear (what this script
-    -- itself last told the actuator to do): gear_cmd_pending already being
-    -- false here means that command either got CAN-confirmed already or hit
-    -- the GEAR_MAXT timeout, so commanded_gear is the best information this
-    -- script has left. This is a deliberate risk trade-off, not an oversight
-    -- -- without it, a dead CAN tap would let the gearbox shift (5.1.1) but
-    -- never actually let the vehicle move, which defeats the point of being
-    -- able to shift in an emergency with the CAN tap down.
+    -- R/L/H -- else commanded_gear as the best information this script has
+    -- left. This is a deliberate risk trade-off, not an oversight -- without
+    -- it, a dead CAN tap would let the gearbox shift (5.1.1) but never
+    -- actually let the vehicle move, which defeats the point of being able
+    -- to shift in an emergency with the CAN tap down.
     -- =========================================================================
-    local effective_gear = can_gear_fresh and confirmed_gear or commanded_gear
     local gas_allowed = (not failsafe_active) and (not gear_cmd_pending)
         and (effective_gear == "R" or effective_gear == "L" or effective_gear == "H")
     if failsafe_active then
