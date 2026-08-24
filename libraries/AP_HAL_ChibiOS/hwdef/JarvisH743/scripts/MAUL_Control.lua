@@ -541,7 +541,14 @@ local hillhold_pwm_pct      = 0
 local hillhold_last_step_ms = 0
 local hillhold_timer_start_ms = 0
 local hillhold_last_gear    = "UNKNOWN"
-local standby_deadline_ms   = math.huge  -- never sleep until the first real auto-clamp event
+-- "Never" until the first real auto-clamp event sets a real deadline. Can't
+-- use math.huge here: millis()/now is a uint32_t userdata, and comparing it
+-- against a float coerces the float to uint32_t (lua_boxed_numerics.cpp,
+-- coerce_to_uint32_t) which requires 0 <= v <= UINT32_MAX -- math.huge fails
+-- that range check and throws "bad argument" instead of just being "big".
+-- 0xFFFFFFFF (UINT32_MAX) IS in range and is ~49.7 days of uptime away, so
+-- it's effectively "never" for this vehicle's purposes.
+local standby_deadline_ms   = 0xFFFFFFFF
 -- Latched, not recomputed fresh each tick: once asleep, only a confirmed-real
 -- motion reading, a live manual/override press, or a fresh auto-clamp event
 -- wakes it -- CAN merely going stale must NOT wake it (client-reported bug:
