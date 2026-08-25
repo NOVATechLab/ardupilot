@@ -198,13 +198,20 @@ CAN_P2_DRIVER 2
 CAN_P2_BITRATE 500000
 
 # --- Battery monitors ---
-BATT_MONITOR 9
+# BATT (instance 0) is fed from the CAN-bus 12V accessory-battery voltage via
+# MAUL_Control.lua (battery:handle_scripting) -- see section F. The former
+# ESC-based reading moved to BATT2 so it's not lost, just no longer the one
+# shown in the GCS's primary battery display.
+BATT_MONITOR 29
 BATT_CAPACITY 3300
 BATT_OPTIONS 128
 BATT_LOW_TIMER 10
 BATT2_MONITOR 9
 BATT2_CAPACITY 3300
 BATT2_SERIAL_NUM 1
+
+# --- EFI (engine rpm + cylinder head temperature, from CAN via MAUL_Control.lua) ---
+EFI_TYPE 7
 
 # --- EKF3 source set (this vehicle runs without compass) ---
 EK3_SRC_OPTIONS 1

@@ -129,13 +129,12 @@ end
 -- count against the limit -- only the one `local P = {}` does.
 local P = {}
 
--- Gear-selector actuator PWM per position. UNCALIBRATED: default is a neutral
--- placeholder (1500) for every position until measured on the real actuator.
-P.P_SVO    = add_param(1,  'P_SVO',      1500)
-P.N_SVO    = add_param(2,  'N_SVO',      1500)
-P.R_SVO    = add_param(3,  'R_SVO',      1500)
-P.L_SVO    = add_param(4,  'L_SVO',      1500)
-P.H_SVO    = add_param(5,  'H_SVO',      1500)
+-- Gear-selector actuator PWM per position. Calibrated on the real actuator.
+P.P_SVO    = add_param(1,  'P_SVO',      1020)
+P.N_SVO    = add_param(2,  'N_SVO',      1510)
+P.R_SVO    = add_param(3,  'R_SVO',      1260)
+P.L_SVO    = add_param(4,  'L_SVO',      1980)
+P.H_SVO    = add_param(5,  'H_SVO',      1750)
 P.BRK_MIN  = add_param(6,  'BRK_MIN',    1000)  -- brake released
 P.BRK_MAX  = add_param(7,  'BRK_MAX',    2000)  -- brake fully squeezed
 P.THR_DZLO = add_param(8,  'THR_DZ_LO',  1470)  -- idle zone low bound (raw CH1)
@@ -1009,6 +1008,42 @@ local function update()
         if failsafe_active   then bits = bits | 0x20 end
         if difflock_active   then bits = bits | 0x40 end
         gcs:send_named_float("MAUL_ST", bits)
+
+        -- Publish the CAN-bus 12V accessory-battery voltage (0x342 frame) as
+        -- ArduPilot's own battery monitor 0 (BATT_MONITOR=29/Scripting, see
+        -- defaults.parm) -- comes out as a normal BATTERY_STATUS message, so
+        -- any GCS that already shows battery voltage needs no changes at all.
+        -- Current/remaining-% are left unset (unknown) -- this CAN frame only
+        -- carries voltage.
+        local batt_state = BattMonitorScript_State()
+        batt_state:healthy(now - can_state.ts_342 < cfg.CAN_TIMEOUT)
+        batt_state:voltage(can_state.batt_voltage)
+        battery:handle_scripting(0, batt_state)
+
+        -- Publish engine rpm + cylinder head temperature as a native
+        -- EFI_STATUS message (EFI_TYPE=7/Scripting, see defaults.parm). Both
+        -- come from the same 0x102 CAN frame, so can_rpm_fresh covers both.
+        -- cylinder_head_temperature is stored in Kelvin internally
+        -- (AP_EFI_State.h), hence the +273.15 -- can_state.engine_temp_c is
+        -- already Celsius (0x102 frame, byte3 - 60).
+        --
+        -- last_updated_ms is only bumped while can_rpm_fresh: AP_EFI derives
+        -- is_healthy() purely from how recently it was called, so leaving it
+        -- unset (stays 0 on this fresh EFI_State()) while the CAN frame is
+        -- stale correctly marks the backend unhealthy instead of parroting
+        -- the last good reading forever.
+        local efi_backend = efi:get_backend(0)
+        if efi_backend then
+            local efi_state = EFI_State()
+            efi_state:engine_speed_rpm(can_state.rpm)
+            local cyl_status = Cylinder_Status()
+            cyl_status:cylinder_head_temperature(can_state.engine_temp_c + 273.15)
+            efi_state:cylinder_status(cyl_status)
+            if can_rpm_fresh then
+                efi_state:last_updated_ms(now)
+            end
+            efi_backend:handle_scripting(efi_state)
+        end
     end
 
     -- =========================================================================
