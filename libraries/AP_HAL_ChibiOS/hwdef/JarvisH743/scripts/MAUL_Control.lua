@@ -938,7 +938,13 @@ local function update()
         brake_asleep = true
     end
 
-    local brake_out_pwm = brake_asleep and 0 or math.floor(final_brake_pwm)
+    -- Physical actuator is inverted vs. the logical BRK_MIN..BRK_MAX scale
+    -- used everywhere above (BRK_MIN=released..BRK_MAX=squeezed): on the
+    -- actual servo, 2000=released and 1000=fully squeezed. Mirror only at
+    -- the very last step, so the internal demand/state-machine math above
+    -- (and BRK_MIN/BRK_MAX's meaning) stays untouched; the 0 sleep sentinel
+    -- is left alone too, since it means "no signal", not "released".
+    local brake_out_pwm = brake_asleep and 0 or math.floor(cfg.BRK_MIN + cfg.BRK_MAX - final_brake_pwm)
 
     -- =========================================================================
     -- GAS: only ever an override to force idle/failsafe. When allowed, this
