@@ -20,11 +20,13 @@
 -- below it, via the SERVO2_MIN=SERVO2_TRIM clamp), ramping to 100% above it.
 --
 -- This script does NOT compute the gas PWM. It only:
---   1) forces SERVO2 (gas) to idle when the CAN-confirmed gear is not R/L/H,
---      a gear shift is in flight, or the own-timer failsafe is active — same
---      technique as neutralize_throttle() in JRVS_MamontUGV.lua: override
---      only to force a safe state, otherwise leave the channel alone so
---      ArduPilot's native output shows through.
+--   1) forces SERVO2 (gas) to idle while a gear shift is in flight or the
+--      own-timer failsafe is active -- same technique as
+--      neutralize_throttle() in JRVS_MamontUGV.lua: override only to force a
+--      safe state, otherwise leave the channel alone so ArduPilot's native
+--      output shows through. Gas is otherwise allowed in ANY gear, including
+--      P/N, so the engine can be revved to check RPM response without
+--      engaging the gearbox.
 --   2) drives the brake actuator from several independent demand sources
 --      (manual stick, gearshift-wait auto-brake, handbrake, hill-hold
 --      auto-apply, failsafe) and outputs the max of them, with a standby
@@ -950,16 +952,14 @@ local function update()
     -- script does not touch SERVO2 at all -- ArduPilot's native throttle
     -- mixer already produces 0 output for any stick at/below the idle zone.
     --
-    -- Gate is effective_gear (computed above): CAN-confirmed when fresh --
-    -- the strongest guarantee, independent proof the gearbox really is in
-    -- R/L/H -- else commanded_gear as the best information this script has
-    -- left. This is a deliberate risk trade-off, not an oversight -- without
-    -- it, a dead CAN tap would let the gearbox shift (5.1.1) but never
-    -- actually let the vehicle move, which defeats the point of being able
-    -- to shift in an emergency with the CAN tap down.
+    -- Gas is allowed in ANY gear, including P/N -- client wants to be able to
+    -- rev the engine in Park/Neutral to check it's actually getting RPM
+    -- (gearbox is mechanically disengaged in P/N, so the vehicle can't move
+    -- from this alone). Still forced to idle while a gear shift is actually
+    -- in flight (gear_cmd_pending -- actuator moving/unconfirmed) or during
+    -- the own-timer failsafe.
     -- =========================================================================
     local gas_allowed = (not failsafe_active) and (not gear_cmd_pending)
-        and (effective_gear == "R" or effective_gear == "L" or effective_gear == "H")
     if failsafe_active then
         SRV_Channels:set_output_pwm_chan_timeout(GAS_CHAN, math.floor(cfg.FS_THRPWM), OUT_TIMEOUT_MS)
     elseif not gas_allowed then
