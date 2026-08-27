@@ -187,15 +187,6 @@ P.BRK_AADELAY = add_param(29, 'BRK_AADELAY', 5000)  -- Brakes_AutoApply_Delay (m
 P.BRK_AASTEP  = add_param(30, 'BRK_AASTEP',    10)  -- hill-hold escalation step (%)
 P.BRK_AAPRD   = add_param(31, 'BRK_AAPRD',   1000)  -- hill-hold escalation period (ms)
 P.BRK_SBYMS   = add_param(32, 'BRK_SBYMS',  20000)  -- Brakes_Standby_Delay (ms) before PWM=0 sleep
-P.BRK_GASPCT  = add_param(38, 'BRK_GASPCT',   10)   -- gas-stick %% (above idle) that also releases handbrake/hill-hold -- client-requested fallback for when CAN rpm isn't available
--- RC channel carrying the dedicated manual brake, or 0 when no such physical
--- control exists on the transmitter. 0 is the default and it matters: with a
--- real receiver attached EVERY channel always carries a value (see rc_pwm()
--- below), so an unassigned channel resting at its neutral ~1500 would be read
--- as "operator squeezing the brake halfway" forever. There is no "channel
--- absent" reading to fall back on, so an unwired source has to be switched
--- off explicitly rather than detected.
-P.BRK_MANCH   = add_param(39, 'BRK_MANCH',     0)   -- 0 = no manual-brake control fitted, source disabled
 
 -- --- Failsafe (own timer, independent of native FS_TIMEOUT/FS_ACTION -- see
 -- debug/MAUL_UGV_README.md; this one gates the scripting-owned brake/gear/gas
@@ -209,6 +200,24 @@ P.STR_DLMXANG = add_param(36, 'STR_DLMXANG', 100)  -- max PWM deviation from SER
 
 -- --- Front diff-lock timer ---
 P.DL_WORKT = add_param(37, 'DL_WORKT', 180)  -- DifLock_Work_Time (s)
+
+-- IMPORTANT: indices below must stay in ASCENDING order, and any new parameter
+-- must be appended here with the next free index -- never inserted earlier in
+-- the file with a higher number. AP_Param::add_param() fills every still-unused
+-- slot BELOW the index being added and marks those gaps AP_PARAM_FLAG_HIDDEN
+-- (AP_Param.cpp:3177-3186). A later add_param() for one of those gaps sets its
+-- name/idx/offset/type but never clears flags, so the parameter works inside
+-- this script yet stays invisible to the GCS -- it silently drops out of
+-- parameter lists and .param files.
+P.BRK_GASPCT  = add_param(38, 'BRK_GASPCT',   10)   -- gas-stick %% (above idle) that also releases handbrake/hill-hold -- client-requested fallback for when CAN rpm isn't available
+-- RC channel carrying the dedicated manual brake, or 0 when no such physical
+-- control exists on the transmitter. 0 is the default and it matters: with a
+-- real receiver attached EVERY channel always carries a value (see rc_pwm()
+-- below), so an unassigned channel resting at its neutral ~1500 would be read
+-- as "operator squeezing the brake halfway" forever. There is no "channel
+-- absent" reading to fall back on, so an unwired source has to be switched
+-- off explicitly rather than detected.
+P.BRK_MANCH   = add_param(39, 'BRK_MANCH',     0)   -- 0 = no manual-brake control fitted, source disabled
 
 local cfg = {}
 local function refresh_cfg()
