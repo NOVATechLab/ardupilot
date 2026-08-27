@@ -917,14 +917,18 @@ local function update()
     -- and never while the operator is actively holding either manual source.
     --
     -- Latched via brake_asleep (declared in STATE), not recomputed fresh
-    -- every tick -- entering sleep still requires strict, CAN-confirmed
-    -- proof of standing still (so "no CAN" correctly never enters sleep,
-    -- same as before), but once asleep, losing CAN afterwards must NOT by
-    -- itself wake it back up (client-reported bug: it used to, because
-    -- staying asleep required speed_is_zero/rpm_is_low to keep being true
-    -- every tick, and those go false the instant CAN goes stale).
-    local speed_is_zero = can_speed_fresh and can_state.speed_kmh <= 0.05
-    local rpm_is_low     = can_rpm_fresh and can_state.rpm < cfg.GEAR_SAFRPM
+    -- every tick -- once asleep, only positive CAN-confirmed motion, a live
+    -- manual/override press, gearshift-wait or failsafe wakes it; CAN merely
+    -- going stale must NOT wake it (fixed bug 2026-08-23).
+    --
+    -- 2026-08-27 (client): the standby timer must ALSO fire with CAN
+    -- absent/stale. "No fresh CAN speed/rpm" is therefore taken as "assume
+    -- stopped" for the ENTER-sleep test (same convention as speed_ok/rpm_ok in
+    -- the gear machine above) instead of blocking sleep forever. The WAKE test
+    -- (definitely_moving, below) still needs positive fresh-CAN motion, so a
+    -- stale bus never wakes an already-sleeping brake.
+    local speed_is_zero = (not can_speed_fresh) or (can_state.speed_kmh <= 0.05)
+    local rpm_is_low     = (not can_rpm_fresh)   or (can_state.rpm < cfg.GEAR_SAFRPM)
 
     local definitely_moving = (can_speed_fresh and can_state.speed_kmh > 0.05)
         or (can_rpm_fresh and can_state.rpm >= cfg.GEAR_SAFRPM)
