@@ -49,8 +49,17 @@
 --                             same physical channel (RCMAP_THROTTLE=1).
 -- CH_GEAR     (RC_OVERRIDE): 5 zones -> P / N / R / L / H target
 -- CH_DIFLOCK  (RC_OVERRIDE): rising edge = operator requests front diff-lock
--- CH_BRAKE_MANUAL (RC_OVERRIDE): dedicated manual brake, proportional over
---                             its full range, independent of CH1/gear/CAN
+-- MAUL_BRK_MANCH: dedicated manual brake, proportional over the channel's
+--                             RCn_MIN..RCn_MAX range, independent of
+--                             CH1/gear/CAN. 0 = no such control fitted.
+--
+-- NOTE on channel defaults: rc_pwm()'s "channel absent -> safe default" only
+-- fires while nothing drives the channel at all (e.g. a GCS sending
+-- RC_CHANNELS_OVERRIDE for a couple of channels and zeroes elsewhere). Any
+-- real receiver -- including an ELRS RX in MAVLink mode, which overrides all
+-- 16 -- makes every channel carry a live value, so that fallback becomes
+-- unreachable. Sources whose control isn't physically fitted must therefore
+-- be disabled explicitly, not left to "read as absent".
 --
 -- CAN: passive listener only (never writes to the bus), decodes the Can-Am
 -- broadcast frames documented in debug/canam_can_map.md. Requires one CAN
@@ -76,9 +85,8 @@ local CH_GEAR         = 6
 local CH_DIFLOCK      = 7  -- rising edge = operator requests diff-lock engage;
                             -- CANDIDATE channel, confirm free on the real remote
                             -- mapping before relying on it (see debug/MAUL_UGV_README.md)
-local CH_BRAKE_MANUAL = 4  -- dedicated manual brake override, full range
-                            -- 1000=released..2000=fully clamped, independent
-                            -- of CH1 -- CANDIDATE channel, confirm free
+-- The manual-brake channel is NOT a constant: it lives in MAUL_BRK_MANCH so it
+-- can be set to 0 when no such control is fitted. See that parameter below.
 
 -- ---------------------------------------------------------------------------
 -- SERVO OUTPUTS (0-based channel index)
@@ -180,6 +188,14 @@ P.BRK_AASTEP  = add_param(30, 'BRK_AASTEP',    10)  -- hill-hold escalation step
 P.BRK_AAPRD   = add_param(31, 'BRK_AAPRD',   1000)  -- hill-hold escalation period (ms)
 P.BRK_SBYMS   = add_param(32, 'BRK_SBYMS',  20000)  -- Brakes_Standby_Delay (ms) before PWM=0 sleep
 P.BRK_GASPCT  = add_param(38, 'BRK_GASPCT',   10)   -- gas-stick %% (above idle) that also releases handbrake/hill-hold -- client-requested fallback for when CAN rpm isn't available
+-- RC channel carrying the dedicated manual brake, or 0 when no such physical
+-- control exists on the transmitter. 0 is the default and it matters: with a
+-- real receiver attached EVERY channel always carries a value (see rc_pwm()
+-- below), so an unassigned channel resting at its neutral ~1500 would be read
+-- as "operator squeezing the brake halfway" forever. There is no "channel
+-- absent" reading to fall back on, so an unwired source has to be switched
+-- off explicitly rather than detected.
+P.BRK_MANCH   = add_param(39, 'BRK_MANCH',     0)   -- 0 = no manual-brake control fitted, source disabled
 
 -- --- Failsafe (own timer, independent of native FS_TIMEOUT/FS_ACTION -- see
 -- debug/MAUL_UGV_README.md; this one gates the scripting-owned brake/gear/gas
@@ -231,6 +247,7 @@ local function refresh_cfg()
     cfg.BRK_AAPRD   = P.BRK_AAPRD:get()
     cfg.BRK_SBYMS   = P.BRK_SBYMS:get()
     cfg.BRK_GASPCT  = P.BRK_GASPCT:get()
+    cfg.BRK_MANCH   = math.floor(P.BRK_MANCH:get())
 
     cfg.FS_DLYMS   = P.FS_DLYMS:get()
     cfg.FS_THRPWM  = P.FS_THRPWM:get()
@@ -270,6 +287,27 @@ local function rc_pwm(chan, default)
     local v = rc:get_pwm(chan)
     if not v or v < 900 then return default end
     return v
+end
+
+-- Endpoints of the manual-brake channel, taken from its own RCn_MIN/RCn_MAX so
+-- the mapping follows whatever the receiver actually delivers (CRSF/ELRS span
+-- 988..2012, not 1000..2000) instead of hardcoded literals. param:get() by name
+-- is a string lookup, so this is cached and only re-read when BRK_MANCH itself
+-- changes -- not on every 10ms tick.
+local brk_ch_cached = -1
+local brk_lo, brk_hi = 1000, 2000
+
+local function refresh_brake_channel()
+    if cfg.BRK_MANCH == brk_ch_cached then return end
+    brk_ch_cached = cfg.BRK_MANCH
+    if cfg.BRK_MANCH > 0 then
+        brk_lo = math.floor(param:get(string.format('RC%d_MIN', cfg.BRK_MANCH)) or 1000)
+        brk_hi = math.floor(param:get(string.format('RC%d_MAX', cfg.BRK_MANCH)) or 2000)
+        if brk_hi <= brk_lo then brk_lo, brk_hi = 1000, 2000 end
+        log(SEV_INFO, string.format("Manual brake: CH%d (%d-%d)", cfg.BRK_MANCH, brk_lo, brk_hi))
+    else
+        log(SEV_INFO, "Manual brake: no channel fitted (MAUL_BRK_MANCH=0)")
+    end
 end
 
 local function map(x, in_lo, in_hi, out_lo, out_hi)
@@ -529,6 +567,12 @@ local gear_wait_safe          = false  -- waiting for safe speed/rpm before comm
 local gear_wait_target        = "P"
 local gear_cmd_pending        = false  -- actuator commanded, not yet confirmed/timed out -- throttle locked
 local gear_cmd_start_ms       = 0
+-- Set only when a shift gave up WITHOUT CAN confirmation while CAN was alive,
+-- i.e. we have positive evidence the gearbox never landed. Gates the
+-- protect-timeout that de-energises the actuator, so a shift that completed
+-- normally (or one we simply couldn't verify, CAN being absent) keeps holding
+-- its position instead of dropping the output to 0.
+local gear_stuck              = false
 local gear_park_wait          = false  -- gear settled on P, waiting extra GEAR_MAXT before handbrake
 local gear_park_wait_start_ms = 0
 
@@ -647,6 +691,7 @@ local function start_gear_shift(gear, now)
     commanded_gear_pwm = gear_pwm(gear)
     gear_cmd_pending    = true
     gear_cmd_start_ms   = now
+    gear_stuck          = false
     log(SEV_INFO, string.format("Gear -> %s (pwm=%d)", gear, commanded_gear_pwm))
 end
 
@@ -668,6 +713,7 @@ end
 -- ---------------------------------------------------------------------------
 local function update()
     refresh_cfg()
+    refresh_brake_channel()
     local now = millis()
 
     can_update(now)
@@ -688,7 +734,6 @@ local function update()
     local v1        = rc_pwm(CH_THROTTLE, cfg.THR_DZ_LO)  -- default: idle
     local vgear      = rc_pwm(CH_GEAR, 1000)               -- default: P zone
     local vdiflock   = rc_pwm(CH_DIFLOCK, 1000)
-    local v_brk_man  = rc_pwm(CH_BRAKE_MANUAL, 1000)       -- default: released
 
     target_gear = target_gear_from_pwm(vgear)
 
@@ -779,8 +824,14 @@ local function update()
 
         if gear_cmd_pending then
             local shift_confirmed = can_gear_fresh and can_state.gear_valid and can_state.gear == commanded_gear
-            if shift_confirmed or (now - gear_cmd_start_ms > cfg.GEAR_MAXT) then
+            local timed_out       = (now - gear_cmd_start_ms > cfg.GEAR_MAXT)
+            if shift_confirmed or timed_out then
                 gear_cmd_pending = false
+                -- Only a timeout while CAN was actually reporting counts as
+                -- "stuck". With CAN stale we have no evidence either way, and
+                -- guessing "stuck" there would cut power to a perfectly good
+                -- actuator every time the bus is unplugged (bench testing).
+                gear_stuck = timed_out and (not shift_confirmed) and can_gear_fresh
                 if commanded_gear == "P" then
                     gear_park_wait          = true
                     gear_park_wait_start_ms = now
@@ -810,13 +861,23 @@ local function update()
         manual_pwm = cfg.BRK_MIN
     end
 
-    -- dedicated manual brake override (CH_BRAKE_MANUAL) -- independent of
+    -- dedicated manual brake override (MAUL_BRK_MANCH) -- independent of
     -- CH1/gear/CAN entirely, proportional across the channel's full range so
     -- it works whether it's wired to a switch (effectively on/off) or a
     -- lever. Always live, no latching/state-machine -- releases the instant
     -- the channel drops back to idle, same as the CH1 manual brake.
-    local override_pressed = v_brk_man > 1010
-    local override_pwm = override_pressed and map(v_brk_man, 1000, 2000, cfg.BRK_MIN, cfg.BRK_MAX) or 0
+    -- Skipped entirely when no channel is configured: this source assumes a
+    -- control that RESTS AT ITS MINIMUM, so pointing it at an unassigned
+    -- channel (which sits at ~mid-scale) would hold ~50% brake permanently.
+    local override_pressed = false
+    local override_pwm     = 0
+    if cfg.BRK_MANCH > 0 then
+        local v_brk_man = rc_pwm(cfg.BRK_MANCH, brk_lo)
+        override_pressed = v_brk_man > brk_lo + 20
+        if override_pressed then
+            override_pwm = map(v_brk_man, brk_lo, brk_hi, cfg.BRK_MIN, cfg.BRK_MAX)
+        end
+    end
 
     -- handbrake engage: stick held full-down continuously for BRK_HOLDMS
     local full_down = v1 <= BRAKE_FULL_DOWN_PWM
@@ -1076,11 +1137,15 @@ local function update()
     SRV_Channels:set_output_pwm_chan_timeout(BRAKE_CHAN, brake_out_pwm, OUT_TIMEOUT_MS)
 
     if cfg.CAL_RUN == 0 then
-        local gear_out_pwm
-        if now - gear_cmd_start_ms > (cfg.GEAR_MAXT + cfg.GEAR_TOUT) then
-            gear_out_pwm = 0  -- protect the actuator motor: stop driving it if a shift never settled
-        else
-            gear_out_pwm = commanded_gear_pwm
+        -- Protect the actuator motor: stop driving it only when a shift is
+        -- KNOWN not to have settled (gear_stuck), not merely because time has
+        -- passed since the last command. Without the gear_stuck gate this
+        -- fires GEAR_MAXT+GEAR_TOUT after every shift including successful
+        -- ones -- and after boot, since init() seeds gear_cmd_start_ms -- so
+        -- the output would drop to 0 and stay there.
+        local gear_out_pwm = commanded_gear_pwm
+        if gear_stuck and (now - gear_cmd_start_ms > (cfg.GEAR_MAXT + cfg.GEAR_TOUT)) then
+            gear_out_pwm = 0
         end
         SRV_Channels:set_output_pwm_chan_timeout(GEAR_CHAN, math.floor(gear_out_pwm), OUT_TIMEOUT_MS)
     end
