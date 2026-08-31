@@ -1,7 +1,8 @@
--- Steering rack closed-loop control
+-- Steering rack control
 -- Potentiometer: PB0 (ADC1_INP9)
 -- RELAY1 (PE8) = LEFT,  RELAY2 (PE7) = RIGHT
 -- Steering command: SRV_Channels output ch1 (GroundSteering, SERVO1_FUNCTION=26)
+-- Alignment on/off: JRVS_RACK_OL, switchable in flight via an RCx_OPTION=300 channel
 
 -- ── Parameters (visible in GCS under JRVS_ tab) ──────────────────────────
 local PARAM_TABLE_KEY    = 72
@@ -18,7 +19,7 @@ assert(param:add_param(PARAM_TABLE_KEY, 6, "RACK_OL",    0),    "RACK: param 6")
 
 -- Full names: JRVS_RACK_V_MIN, JRVS_RACK_V_CTR, JRVS_RACK_V_MAX
 --             JRVS_RACK_DB_C (deadband at center),  JRVS_RACK_DB_M (deadband while moving)
---             JRVS_RACK_OL   (0=closed-loop using pot, 1=open-loop diagnostic - see below)
+--             JRVS_RACK_OL   (0=alignment on/closed loop, 1=alignment off/open loop)
 local p_v_min = Parameter(); p_v_min:init("JRVS_RACK_V_MIN")
 local p_v_ctr = Parameter(); p_v_ctr:init("JRVS_RACK_V_CTR")
 local p_v_max = Parameter(); p_v_max:init("JRVS_RACK_V_MAX")
@@ -36,12 +37,14 @@ local PWM_CENTER   = 1500
 local PWM_MAX      = 1900
 local PWM_DEADBAND = 50  -- joystick center deadband (µs)
 local HW_GUARD     = 0.05 -- stop relay when within 50mV of hard limit
+local RC_AUX_ALIGN = 300 -- RC_Channel AUX_FUNC SCRIPTING_1: alignment on/off switch
 
 local pot = analog:channel()
 assert(pot:set_pin(POT_CHANNEL), "RACK: invalid analog pin")
 
 local last_state = nil  -- "LEFT" / "RIGHT" / "CENTER" / "LIMIT_MAX" / "LIMIT_MIN"
 local log_counter = 0   -- throttles the periodic GCS status message
+local sw_prev = nil     -- last seen alignment switch position (nil = none seen yet)
 
 -- Direction codes used in the dataflash STRK log
 local DIR_STOP  = 0
@@ -83,8 +86,39 @@ local function get_target_v(pwm)
     end
 end
 
+-- ── Alignment on/off switch ──────────────────────────────────────────────
+-- One RC channel with RCx_OPTION=300 carries the operator's choice. It can be
+-- driven by a switch on the CRSF transmitter or by a GS-WEB "RC Override
+-- TOGGLE" quick action - both arrive here as the same aux position
+-- (>1800us = HIGH, <1200us = LOW, in between = MIDDLE).
+--
+-- Only a *change* to an extreme position writes JRVS_RACK_OL, which buys two
+-- properties we want:
+--   * transmitter and GCS can both set the mode, last one wins - neither has
+--     to keep holding the channel for its choice to stick;
+--   * MIDDLE means "nobody is commanding". A GS-WEB override that lapses after
+--     RC_OVERRIDE_TIME (3s: link drop, app closed) drops the channel back to
+--     the transmitter's neutral, and the mode stays as last chosen instead of
+--     silently flipping mid-drive. This is why the transmitter side must be a
+--     3-position switch centred at neutral, or the channel left unassigned.
+local function poll_align_switch()
+    local sw = rc:get_aux_cached(RC_AUX_ALIGN)
+    if sw == nil or sw == sw_prev then
+        return
+    end
+    sw_prev = sw
+    if sw == 1 then     -- MIDDLE: only remember it, so a later return to an
+        return          -- extreme still reads as a change
+    end
+    p_ol:set_and_save(sw == 2 and 0 or 1)   -- HIGH = alignment on (closed loop)
+    gcs:send_text(6, sw == 2 and "RACK: alignment ON (switch)"
+                              or "RACK: alignment OFF (switch)")
+end
+
 -- ── Main loop ─────────────────────────────────────────────────────────────
 local function update()
+    poll_align_switch()
+
     local pwm   = SRV_Channels:get_output_pwm(FUNC_STEERING)
     local pot_v = pot:voltage_average()
     local v_min = p_v_min:get()
@@ -100,13 +134,18 @@ local function update()
         return update, 200
     end
 
-    -- ── OPEN-LOOP diagnostic mode (JRVS_RACK_OL=1) ──────────────────────────
-    -- Bypasses the potentiometer entirely and drives relays straight off PWM.
-    -- Use this to tell apart "pot/feedback problem" from "relay/board/motor
-    -- problem": if the rack moves correctly here, the pot/wiring to it is
-    -- the fault; if it still doesn't move, the fault is downstream of the
-    -- relay (board, wiring to the motor, or the motor/actuator itself).
-    -- NOTE: no software end-stop protection in this mode - watch the rack!
+    -- ── ALIGNMENT OFF / open loop (JRVS_RACK_OL=1) ──────────────────────────
+    -- The potentiometer is ignored entirely and the relays follow the stick
+    -- directly, so the operator steers by eye. Same relay logic as the closed
+    -- loop below - only the source of the "stop" decision differs.
+    --
+    -- Doubles as the diagnostic mode for telling apart "pot/feedback problem"
+    -- from "relay/board/motor problem": if the rack moves correctly here, the
+    -- pot or its wiring is the fault; if it still doesn't move, the fault is
+    -- downstream of the relay (board, wiring to the motor, or the motor).
+    --
+    -- NOTE: no software end-stop protection here - the rack is on its own
+    -- mechanical stops, so don't park the stick at full lock.
     if p_ol:get() > 0 then
         local dir = DIR_STOP
         if pwm < PWM_CENTER - PWM_DEADBAND then
@@ -211,5 +250,5 @@ local function update()
     return update, 50  -- 20 Hz
 end
 
-gcs:send_text(6, "steering_rack: ready | params JRVS_RACK_V_*/DB_*")
+gcs:send_text(6, "steering_rack: ready | params JRVS_RACK_V_*/DB_*/OL")
 return update()
