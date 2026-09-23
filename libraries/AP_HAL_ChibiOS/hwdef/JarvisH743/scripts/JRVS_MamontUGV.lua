@@ -24,7 +24,7 @@
 -- ---------------------------------------------------------------------------
 --  0 RELAY1  PE8  ReleBtr   battery
 --  1 RELAY2  PE7  ReleSlc   selector forward/reverse
---  2 RELAY3  PB2  RelePump  hydraulic pump (shared: brakes + body/blade)
+--  2 RELAY3  PB2  RelePump  hydraulic pump (brakes/turns only)
 --  3 RELAY4  PB1  ReleLPV   left  pressure valve
 --  4 RELAY5  PB0  ReleRPV   right pressure valve
 --  5 RELAY6  PD12 left  propeller FORWARD
@@ -94,10 +94,10 @@ local function add_param(idx, name, default)
     return p
 end
 
-local P_G1_SVO   = add_param(1, 'G1_SVO',   1200)  -- SERVO1_MAX for G1 (us)
+local P_G1_SVO   = add_param(1, 'G1_SVO',   1128)  -- SERVO1_MAX for G1 (us)
 local P_G2_SVO   = add_param(2, 'G2_SVO',   1350)  -- SERVO1_MAX for G2 (us)
 local P_G3_SVO   = add_param(3, 'G3_SVO',   1600)  -- SERVO1_MAX for G3 (us)
-local P_G1_THR   = add_param(4, 'G1_THR',   20)    -- MOT_THR_MAX for G1 (%)
+local P_G1_THR   = add_param(4, 'G1_THR',   30)    -- MOT_THR_MAX for G1 (%, min 30)
 local P_G2_THR   = add_param(5, 'G2_THR',   35)    -- MOT_THR_MAX for G2 (%)
 local P_G3_THR   = add_param(6, 'G3_THR',   60)    -- MOT_THR_MAX for G3 (%)
 local P_BRK_HOLD = add_param(7, 'BRK_HOLD', 350)   -- pressure hold before pulsing (ms)
@@ -121,23 +121,34 @@ end
 -- ---------------------------------------------------------------------------
 -- GEARS  ->  SERVO1_MAX / MOT_THR_MAX
 -- ---------------------------------------------------------------------------
+-- Effective G-speed ~ MOT_THR_MAX% * (SERVO1_MAX - SERVO1_TRIM).
+-- ArduPilot (AP_MotorsUGV::sanity_check_parameters) silently clamps
+-- MOT_THR_MAX to 30..100 every loop, so lower gears must be limited via
+-- SERVO1_MAX, not via MOT_THR_MAX < 30.
+local THR_MIN, THR_MAX = 30, 100
 local nGear = 1
+local applied_svo, applied_thr = nil, nil
 
 local function apply_gear()
     local svo = ({ cfg.G1_SVO, cfg.G2_SVO, cfg.G3_SVO })[nGear]
     local thr = ({ cfg.G1_THR, cfg.G2_THR, cfg.G3_THR })[nGear]
+    local req_thr = thr
+    thr = math.max(THR_MIN, math.min(THR_MAX, thr))
+    if svo == applied_svo and thr == applied_thr then return end
+    if thr ~= req_thr then
+        log(SEV_INFO, string.format("G%d_THR=%d out of %d..%d, using %d",
+            nGear, req_thr, THR_MIN, THR_MAX, thr))
+    end
     param:set('SERVO1_MAX',  svo)
     param:set('MOT_THR_MAX', thr)
+    applied_svo, applied_thr = svo, thr
     log(SEV_INFO, string.format("Gear %d  SERVO1_MAX=%d  MOT_THR_MAX=%d", nGear, svo, thr))
 end
 
+-- Called every cycle: re-applies when the gear OR a JRVS_Gx_* param changes.
 local function update_gear(pwm)
-    local g
-    if pwm < 1200 then g = 1 elseif pwm < 1700 then g = 2 else g = 3 end
-    if g ~= nGear then
-        nGear = g
-        apply_gear()
-    end
+    if pwm < 1200 then nGear = 1 elseif pwm < 1700 then nGear = 2 else nGear = 3 end
+    apply_gear()
 end
 
 -- ---------------------------------------------------------------------------
@@ -303,14 +314,14 @@ end
 -- ---------------------------------------------------------------------------
 -- AUX (CH7..CH10) — work in any mode / any throttle
 -- ---------------------------------------------------------------------------
--- up/down pair with mutual exclusion. Returns true if an actuator is driven.
+-- up/down pair with mutual exclusion.
 local function aux_pair(v, up_idx, dn_idx)
     if v > 1700 then
-        relay_on(up_idx);  relay_off(dn_idx); return true
+        relay_on(up_idx);  relay_off(dn_idx)
     elseif v < 1300 then
-        relay_off(up_idx); relay_on(dn_idx);  return true
+        relay_off(up_idx); relay_on(dn_idx)
     else
-        relay_off(up_idx); relay_off(dn_idx); return false
+        relay_off(up_idx); relay_off(dn_idx)
     end
 end
 
@@ -410,15 +421,15 @@ local function update()
         swim_drive(v1, v2)
     end
 
-    -- AUX (any mode)
-    local aux_hyd = false
-    if aux_pair(v7,  IDX_BODY_UP, IDX_BODY_DN)   then aux_hyd = true end
-    if aux_pair(v8,  IDX_BLADE_UP, IDX_BLADE_DN) then aux_hyd = true end
+    -- AUX (any mode). Body/blade/reserve do NOT start the pump: running it for
+    -- these actuators overheats them. Pump only runs for land braking/turning.
+    aux_pair(v7,  IDX_BODY_UP, IDX_BODY_DN)
+    aux_pair(v8,  IDX_BLADE_UP, IDX_BLADE_DN)
     aux_light(v9)
-    if aux_pair(v10, IDX_RSV_UP, IDX_RSV_DN)     then aux_hyd = true end
+    aux_pair(v10, IDX_RSV_UP, IDX_RSV_DN)
 
-    -- shared hydraulic pump: ON for land braking/turning or body/blade/reserve
-    if hyd or aux_hyd then relay_on(IDX_PUMP) else relay_off(IDX_PUMP) end
+    -- hydraulic pump: ON only for land braking/turning
+    if hyd then relay_on(IDX_PUMP) else relay_off(IDX_PUMP) end
 
     return update, 20
 end
