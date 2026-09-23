@@ -22,7 +22,7 @@
 #define AP_BATT_MONITOR_RES_EST_TC_2        0.1f
 
 #if HAL_PROGRAM_SIZE_LIMIT_KB > 1024
-#define AP_BATT_MONITOR_CELLS_MAX           14
+#define AP_BATT_MONITOR_CELLS_MAX           16
 #else
 #define AP_BATT_MONITOR_CELLS_MAX           12
 #endif
@@ -44,6 +44,7 @@ class AP_BattMonitor_Torqeedo;
 class AP_BattMonitor_FuelLevel_Analog;
 class AP_BattMonitor_EFI;
 class AP_BattMonitor_Scripting;
+class AP_BattMonitor_JKBMS;
 
 
 class AP_BattMonitor
@@ -71,6 +72,7 @@ class AP_BattMonitor
     friend class AP_BattMonitor_FuelLevel_Analog;
     friend class AP_BattMonitor_Synthetic_Current;
     friend class AP_BattMonitor_Scripting;
+    friend class AP_BattMonitor_JKBMS;
 
 public:
 

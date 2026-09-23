@@ -29,6 +29,7 @@
 #include "AP_BattMonitor_AD7091R5.h"
 #include "AP_BattMonitor_Scripting.h"
 #include "AP_BattMonitor_TIBQ76952.h"
+#include "AP_BattMonitor_JKBMS.h"
 
 #include <AP_HAL/AP_HAL.h>
 
@@ -713,6 +714,11 @@ AP_BattMonitor::init()
                 drivers[instance] = NEW_NOTHROW AP_BattMonitor_TIBQ76952(*this, state[instance], _params[instance]);
                 break;
 #endif // AP_BATTERY_TIBQ76952_ENABLED
+#if AP_BATTERY_JKBMS_ENABLED
+            case Type::JKBMS:
+                drivers[instance] = NEW_NOTHROW AP_BattMonitor_JKBMS(*this, state[instance], _params[instance]);
+                break;
+#endif // AP_BATTERY_JKBMS_ENABLED
             case Type::NONE:
             default:
                 break;
