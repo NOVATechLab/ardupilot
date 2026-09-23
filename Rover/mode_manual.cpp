@@ -15,6 +15,13 @@ void ModeManual::update()
     // apply manual steering expo
     desired_steering = 4500.0 * input_expo(desired_steering / 4500, g2.manual_steering_expo);
 
+    // apply steering slew rate limit to prevent sudden large inputs from damaging the vehicle
+    if (g2.manual_steering_slewrate > 0) {
+        const float steering_change_max = g2.manual_steering_slewrate * 45.0f * rover.G_Dt;
+        desired_steering = constrain_float(desired_steering, _steering_prev - steering_change_max, _steering_prev + steering_change_max);
+    }
+    _steering_prev = desired_steering;
+
     // if vehicle is balance bot, calculate actual throttle required for balancing
     if (rover.is_balancebot()) {
         rover.balancebot_pitch_control(desired_throttle);

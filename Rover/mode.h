@@ -697,6 +697,10 @@ public:
 protected:
 
     void _exit() override;
+
+private:
+
+    float _steering_prev = 0.0f;
 };
 
 

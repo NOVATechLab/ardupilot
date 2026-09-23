@@ -670,6 +670,16 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("CRASH_TIMEOUT", 61, ParametersG2, crash_timeout, 2.0),
 
+    // @Param: MANUAL_STR_SLEW
+    // @DisplayName: Manual Steering Slew Rate
+    // @Description: Limits how quickly steering can change in MANUAL mode, expressed as a percentage of full deflection per second. Prevents sudden large steering inputs that could damage the vehicle. Set to 0 to disable
+    // @Units: %/s
+    // @Range: 0 500
+    // @Increment: 1
+    // @Values: 0:Disabled,50:Gentle,100:Moderate,200:Fast,500:Very Fast
+    // @User: Standard
+    AP_GROUPINFO("MANUAL_STR_SLEW", 62, ParametersG2, manual_steering_slewrate, 0),
+
     AP_GROUPEND
 };
 
