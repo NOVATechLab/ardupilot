@@ -445,6 +445,19 @@ void AP_SerialManager::init()
     }
 #endif
 
+    /*
+      boards can lock a port to its default protocol and baud rate,
+      e.g. a dedicated companion computer link
+     */
+#ifdef SERIAL3_READONLY
+    state[3].protocol.set(DEFAULT_SERIAL3_PROTOCOL);
+    state[3].baud.set(DEFAULT_SERIAL3_BAUD);
+#endif
+#ifdef SERIAL4_READONLY
+    state[4].protocol.set(DEFAULT_SERIAL4_PROTOCOL);
+    state[4].baud.set(DEFAULT_SERIAL4_BAUD);
+#endif
+
     init_console();
 
     // initialise serial ports
