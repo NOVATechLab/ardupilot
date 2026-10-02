@@ -1,6 +1,8 @@
 -- Steering rack control
 -- Potentiometer: PB0 (ADC1_INP9)
--- RELAY1 (PE8) = LEFT,  RELAY2 (PE7) = RIGHT
+-- Drive (JRVS_RACK_DRV):
+--   0 = two relays:            RELAY1 (PE8) = LEFT, RELAY2 (PE7) = RIGHT
+--   1 = Cytron MD20A (PWM+DIR): RELAY1 (PE8) = PWM (held HIGH = 100%), RELAY2 (PE7) = DIR
 -- Steering command: SRV_Channels output ch1 (GroundSteering, SERVO1_FUNCTION=26)
 -- Alignment on/off: JRVS_RACK_OL, switchable in flight via an RCx_OPTION=300 channel
 
@@ -8,7 +10,7 @@
 local PARAM_TABLE_KEY    = 72
 local PARAM_TABLE_PREFIX = "JRVS_"
 
-assert(param:add_table(PARAM_TABLE_KEY, PARAM_TABLE_PREFIX, 6),
+assert(param:add_table(PARAM_TABLE_KEY, PARAM_TABLE_PREFIX, 7),
     "RACK: failed to add param table")
 assert(param:add_param(PARAM_TABLE_KEY, 1, "RACK_V_MIN", 2.00), "RACK: param 1")
 assert(param:add_param(PARAM_TABLE_KEY, 2, "RACK_V_CTR", 2.62), "RACK: param 2")
@@ -16,20 +18,28 @@ assert(param:add_param(PARAM_TABLE_KEY, 3, "RACK_V_MAX", 3.26), "RACK: param 3")
 assert(param:add_param(PARAM_TABLE_KEY, 4, "RACK_DB_C",  0.07), "RACK: param 4")
 assert(param:add_param(PARAM_TABLE_KEY, 5, "RACK_DB_M",  0.04), "RACK: param 5")
 assert(param:add_param(PARAM_TABLE_KEY, 6, "RACK_OL",    0),    "RACK: param 6")
+assert(param:add_param(PARAM_TABLE_KEY, 7, "RACK_DRV",   0),    "RACK: param 7")
 
 -- Full names: JRVS_RACK_V_MIN, JRVS_RACK_V_CTR, JRVS_RACK_V_MAX
 --             JRVS_RACK_DB_C (deadband at center),  JRVS_RACK_DB_M (deadband while moving)
 --             JRVS_RACK_OL   (0=alignment on/closed loop, 1=alignment off/open loop)
+--             JRVS_RACK_DRV  (0=two relays LEFT/RIGHT, 1=Cytron MD20A PWM+DIR)
 local p_v_min = Parameter(); p_v_min:init("JRVS_RACK_V_MIN")
 local p_v_ctr = Parameter(); p_v_ctr:init("JRVS_RACK_V_CTR")
 local p_v_max = Parameter(); p_v_max:init("JRVS_RACK_V_MAX")
 local p_db_c  = Parameter(); p_db_c:init("JRVS_RACK_DB_C")
 local p_db_m  = Parameter(); p_db_m:init("JRVS_RACK_DB_M")
 local p_ol    = Parameter(); p_ol:init("JRVS_RACK_OL")
+local p_drv   = Parameter(); p_drv:init("JRVS_RACK_DRV")
 
 -- ── Constants ─────────────────────────────────────────────────────────────
 local RELAY_LEFT   = 0   -- RELAY1 = PE8 (relay instance is 0-based!)
 local RELAY_RIGHT  = 1   -- RELAY2 = PE7
+local MD_PWM       = 0   -- Cytron: same RELAY1/PE8 pin, used as the PWM (enable) input
+local MD_DIR       = 1   -- Cytron: same RELAY2/PE7 pin, used as DIR (HIGH = RIGHT)
+local DRV_RELAY    = 0
+local DRV_CYTRON   = 1
+local REVERSE_PAUSE_MS = 100 -- stop this long before reversing (H-bridge current spike)
 local POT_CHANNEL  = 9   -- ADC1_INP9 = PB0
 local FUNC_STEERING = 26 -- SRV_Channel k_steering (GroundSteering), NOT a channel index
 local PWM_MIN      = 1100
@@ -51,21 +61,67 @@ local DIR_STOP  = 0
 local DIR_RIGHT = 1
 local DIR_LEFT  = 2
 
--- ── Relay helpers ─────────────────────────────────────────────────────────
-local function relay_stop()
-    relay:off(RELAY_LEFT)
-    relay:off(RELAY_RIGHT)
+-- ── Drive helpers ─────────────────────────────────────────────────────────
+-- Both drivers use the same two pins, only their meaning differs:
+--   relays: PE8 = LEFT coil, PE7 = RIGHT coil
+--   Cytron: PE8 = PWM held fully on/off (no speed control), PE7 = DIR
+-- Reversing goes through a REVERSE_PAUSE_MS stop: a relay doesn't care, but an
+-- H-bridge slammed from one direction straight into the other takes the full
+-- back-EMF current spike.
+local drv_dir = DIR_STOP     -- direction actually being driven right now
+local reverse_hold_until = 0 -- millis() until which a reversal is held stopped
+
+local drv_type = nil         -- JRVS_RACK_DRV the pins were last driven for
+
+local function drive_pins(dir)
+    local t = p_drv:get()
+    if t ~= drv_type then
+        -- driver changed (or first call): both pins low before reinterpreting
+        -- them - a Cytron "RIGHT" (PE7+PE8 high) would be both coils in relay mode
+        relay:off(RELAY_LEFT)
+        relay:off(RELAY_RIGHT)
+        drv_type = t
+        gcs:send_text(6, t == DRV_CYTRON and "RACK: driver Cytron PWM+DIR"
+                                         or "RACK: driver relays")
+        return
+    end
+    if t == DRV_CYTRON then
+        if dir == DIR_STOP then
+            relay:off(MD_PWM)
+        else
+            -- DIR first, then enable, so the bridge never starts the wrong way
+            if dir == DIR_RIGHT then relay:on(MD_DIR) else relay:off(MD_DIR) end
+            relay:on(MD_PWM)
+        end
+    else
+        if dir == DIR_LEFT then
+            relay:off(RELAY_RIGHT)
+            relay:on(RELAY_LEFT)
+        elseif dir == DIR_RIGHT then
+            relay:off(RELAY_LEFT)
+            relay:on(RELAY_RIGHT)
+        else
+            relay:off(RELAY_LEFT)
+            relay:off(RELAY_RIGHT)
+        end
+    end
 end
 
-local function relay_left()
-    relay:off(RELAY_RIGHT)
-    relay:on(RELAY_LEFT)
+local function drive(dir)
+    local now = millis():toint()
+    if dir ~= DIR_STOP and drv_dir ~= DIR_STOP and dir ~= drv_dir then
+        reverse_hold_until = now + REVERSE_PAUSE_MS
+    end
+    if dir ~= DIR_STOP and now < reverse_hold_until then
+        dir = DIR_STOP
+    end
+    drv_dir = dir
+    drive_pins(dir)
 end
 
-local function relay_right()
-    relay:off(RELAY_LEFT)
-    relay:on(RELAY_RIGHT)
-end
+local function relay_stop()  drive(DIR_STOP)  end
+local function relay_left()  drive(DIR_LEFT)  end
+local function relay_right() drive(DIR_RIGHT) end
 
 -- ── Map PWM → target pot voltage ─────────────────────────────────────────
 local function get_target_v(pwm)
